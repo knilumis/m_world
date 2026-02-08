@@ -1,0 +1,127 @@
+﻿<!DOCTYPE html>
+<html lang="tr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MIU WORLD - Karakter ve Lobi</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Nunito+Sans:wght@600;700;800&family=Press+Start+2P&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+  <main class="app-shell">
+    <section class="screen is-active" id="login-screen">
+      <header class="hero">
+        <p class="game-name">MIU WORLD</p>
+        <h1>Dünyaya bağlan</h1>
+      </header>
+
+      <section class="login-layout">
+        <article class="login-card">
+          <h2>Kullanıcı girişi</h2>
+          <form id="login-form" class="login-form" autocomplete="on">
+            <label class="form-label" for="username-input">Kullanıcı adı</label>
+            <input id="username-input" name="username" class="text-input" type="text" required minlength="2" maxlength="24" autocomplete="username">
+
+            <label class="form-label" for="password-input">Şifre</label>
+            <input id="password-input" name="password" class="text-input" type="password" required minlength="4" maxlength="64" autocomplete="current-password">
+
+            <p id="login-feedback" class="inline-feedback" aria-live="polite"></p>
+            <button id="login-button" class="start-button login-button" type="submit">Girişi Yap</button>
+          </form>
+        </article>
+      </section>
+    </section>
+
+    <section class="screen" id="creator-screen" hidden>
+      <header class="hero">
+        <p class="game-name">MIU WORLD</p>
+        <h1>Kendi miu'nu oluştur</h1>
+        <p id="creator-user-text" class="screen-subtitle"></p>
+      </header>
+
+      <section class="creator-layout">
+        <div class="preview-panel">
+          <div class="preview-frame">
+            <canvas id="miu-canvas" width="32" height="32" aria-label="Miu karakter önizlemesi"></canvas>
+          </div>
+          <p class="hint">Piksel stilinde minik bir dost tasarla.</p>
+
+          <div class="name-field">
+            <label class="form-label" for="miu-name-input">Miu adı</label>
+            <input id="miu-name-input" class="text-input" type="text" minlength="2" maxlength="20" placeholder="Örn: MinikMiu">
+            <div class="name-actions">
+              <button id="random-name-button" class="secondary-button inline-mini-button" type="button">Rastgele Ad</button>
+            </div>
+            <p id="miu-name-feedback" class="inline-feedback" aria-live="polite"></p>
+          </div>
+
+          <div class="action-buttons">
+            <button id="random-style-button" class="secondary-button" type="button">Stili Rastgele Seç</button>
+            <button id="start-button" class="start-button" type="button">Miu ile Başla</button>
+          </div>
+        </div>
+
+        <aside class="controls-panel" id="controls-panel" aria-label="Karakter parçaları ayarları"></aside>
+      </section>
+    </section>
+
+    <section class="screen" id="lobby-screen" hidden>
+      <header class="hero hero-lobby">
+        <div>
+          <p class="game-name">MIU WORLD</p>
+          <h1>Dünya giriş lobisi</h1>
+        </div>
+        <button id="back-button" class="secondary-button" type="button">Karaktere Dön</button>
+      </header>
+
+      <section class="lobby-layout">
+        <article class="lobby-card">
+          <h2>Hazır Miu</h2>
+          <div class="preview-frame lobby-preview-frame">
+            <canvas id="lobby-miu-canvas" width="32" height="32" aria-label="Miu lobi önizlemesi"></canvas>
+          </div>
+          <p class="selected-world" id="lobby-miu-name">Miu adı: -</p>
+          <ul id="miu-build-list" class="build-list"></ul>
+        </article>
+
+        <article class="lobby-card">
+          <h2>Bir dünya seç</h2>
+          <div id="world-list" class="world-list" role="listbox" aria-label="Dünya seçimi"></div>
+          <p class="selected-world" id="selected-world-text">Seçilen dünya: -</p>
+          <button id="enter-world-button" class="enter-world-button" type="button">Dünyaya Gir</button>
+        </article>
+      </section>
+    </section>
+
+    <section class="screen" id="world-screen" hidden>
+      <header class="hero hero-lobby">
+        <div>
+          <p class="game-name">MIU WORLD</p>
+          <h1 id="world-title-text">Miyu Meydanı</h1>
+        </div>
+        <button id="world-back-button" class="secondary-button" type="button">Lobiye Dön</button>
+      </header>
+
+      <section class="world-scene-layout">
+        <article class="world-scene-card">
+          <div class="world-hud">
+            <p id="world-status-text" class="world-status-text"></p>
+            <p id="world-help-text" class="world-help-text">Mouse'a basılı tutup joystick gibi sür veya WASD kullan. E ile etkileşime geç.</p>
+          </div>
+
+          <div class="world-canvas-frame">
+            <canvas id="world-canvas" width="480" height="280" aria-label="Miyu Meydanı oyun alanı"></canvas>
+          </div>
+
+          <p id="world-chat-text" class="world-chat-text"></p>
+        </article>
+      </section>
+    </section>
+  </main>
+
+  <script src="./app.js"></script>
+</body>
+</html>
+
