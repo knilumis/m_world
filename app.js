@@ -1,15 +1,54 @@
 const { PARTS } = window.MiuCharacterConfig;
 const { createCharacterScreenModule } = window.MiuCharacter;
 const { cycle, normalizeInput } = window.MiuCore;
-const {
-  CAFE_GAME_KEYS,
-  CLUB_GAME_KEYS,
-  WORLD_CONTROL_KEYS,
-  WORLD_EXTRA_KEYS,
-  createInitialWorldState,
-  createWorldRuntime
-} = window.MiuWorld;
-const { WORLD_OPTIONS, getWorldById } = window.MiuWorlds;
+
+const fallbackWorldOptions = [
+  {
+    id: "miu-square",
+    name: "Miu Meydanı",
+    vibe: "Sohbet",
+    crowd: "0 Miu"
+  }
+];
+
+const worldDirectory = window.MiuWorlds || null;
+const WORLD_OPTIONS = worldDirectory && Array.isArray(worldDirectory.WORLD_OPTIONS) && worldDirectory.WORLD_OPTIONS.length > 0
+  ? worldDirectory.WORLD_OPTIONS
+  : fallbackWorldOptions;
+const getWorldById = worldDirectory && typeof worldDirectory.getWorldById === "function"
+  ? worldDirectory.getWorldById
+  : (worldId) => WORLD_OPTIONS.find((world) => world.id === worldId) || WORLD_OPTIONS[0];
+
+const fallbackWorldApi = {
+  CAFE_GAME_KEYS: new Set(["1", "2", "3", "q"]),
+  CLUB_GAME_KEYS: new Set(["w", "a", "s", "d", "q"]),
+  WORLD_CONTROL_KEYS: new Set(["arrowup", "arrowdown", "arrowleft", "arrowright", "w", "a", "s", "d", "e"]),
+  WORLD_EXTRA_KEYS: new Set(["f"]),
+  createInitialWorldState() {
+    return {
+      running: false,
+      mode: "square",
+      keys: { up: false, down: false, left: false, right: false },
+      mouse: { active: false, x: 0, y: 0, screenX: 0, screenY: 0 },
+      club: { game: { active: false } },
+      cafe: { game: { active: false } },
+      fashionShop: { open: false }
+    };
+  },
+  createWorldRuntime: null
+};
+
+const worldApi = window.MiuWorld || fallbackWorldApi;
+const CAFE_GAME_KEYS = worldApi.CAFE_GAME_KEYS || fallbackWorldApi.CAFE_GAME_KEYS;
+const CLUB_GAME_KEYS = worldApi.CLUB_GAME_KEYS || fallbackWorldApi.CLUB_GAME_KEYS;
+const WORLD_CONTROL_KEYS = worldApi.WORLD_CONTROL_KEYS || fallbackWorldApi.WORLD_CONTROL_KEYS;
+const WORLD_EXTRA_KEYS = worldApi.WORLD_EXTRA_KEYS || fallbackWorldApi.WORLD_EXTRA_KEYS;
+const createInitialWorldState = typeof worldApi.createInitialWorldState === "function"
+  ? worldApi.createInitialWorldState
+  : fallbackWorldApi.createInitialWorldState;
+const createWorldRuntimeFactory = typeof worldApi.createWorldRuntime === "function"
+  ? worldApi.createWorldRuntime
+  : null;
 
 const state = {
   body: { style: 0, color: 0 },
@@ -18,10 +57,25 @@ const state = {
   feet: { style: 0, color: 0 },
   selectedWorldId: WORLD_OPTIONS[0].id,
   username: "",
-  miuName: ""
+  miuName: "",
+  inventory: {
+    ownedFashionItemIds: [],
+    equippedOutfitId: "",
+    equippedAccessoryId: "",
+    equippedShoeId: ""
+  }
 };
 
-const worldState = createInitialWorldState();
+function createSafeWorldState() {
+  try {
+    return createInitialWorldState();
+  } catch (error) {
+    console.error("Dünya durumu başlatılırken hata oluştu:", error);
+    return fallbackWorldApi.createInitialWorldState();
+  }
+}
+
+const worldState = createSafeWorldState();
 
 const loginScreen = document.getElementById("login-screen");
 const creatorScreen = document.getElementById("creator-screen");
@@ -71,20 +125,97 @@ const characterScreen = createCharacterScreenModule({
   lobbyMiuName
 });
 
-const worldRuntime = createWorldRuntime({
-  PARTS,
-  state,
-  worldState,
-  worldCanvas,
-  worldCtx,
-  worldTitleText,
-  worldStatusText,
-  worldHelpText,
-  worldChatText,
-  getWorldById,
-  clonePartState: characterScreen.clonePartState,
-  createMiuSpriteCanvas: characterScreen.createMiuSpriteCanvas
-});
+function createFallbackWorldRuntime() {
+  return {
+    available: false,
+    initializeMiyuSquareWorld() {},
+    ensureWorldAudio() {},
+    startWorldLoop() {},
+    stopWorldLoop() {
+      worldState.running = false;
+      if (worldState.keys) {
+        worldState.keys.up = false;
+        worldState.keys.down = false;
+        worldState.keys.left = false;
+        worldState.keys.right = false;
+      }
+      if (worldState.mouse) {
+        worldState.mouse.active = false;
+      }
+    },
+    triggerPlayerEmote() {},
+    interactInWorld() {},
+    closeFashionShop() {
+      if (worldState.fashionShop) {
+        worldState.fashionShop.open = false;
+      }
+    },
+    isFashionShopOpen() {
+      return Boolean(worldState.fashionShop && worldState.fashionShop.open);
+    },
+    isFashionShopKey() {
+      return false;
+    },
+    handleFashionShopKey() {},
+    handleWorldMouseDown() {},
+    handleWorldMouseMove() {},
+    handleWorldMouseUp() {
+      if (worldState.mouse) {
+        worldState.mouse.active = false;
+      }
+    },
+    setMovementKey() {},
+    resolveCafeGameChoice() {},
+    stopCafeMiniGame() {},
+    resolveClubDanceInput() {},
+    stopClubDanceGame() {}
+  };
+}
+
+function createSafeWorldRuntime() {
+  const fallbackRuntime = createFallbackWorldRuntime();
+  if (!createWorldRuntimeFactory) {
+    console.error("Dünya runtime modülü bulunamadı.");
+    return fallbackRuntime;
+  }
+
+  try {
+    const runtime = createWorldRuntimeFactory({
+      PARTS,
+      state,
+      worldState,
+      worldCanvas,
+      worldCtx,
+      worldTitleText,
+      worldStatusText,
+      worldHelpText,
+      worldChatText,
+      getWorldById,
+      clonePartState: characterScreen.clonePartState,
+      createMiuSpriteCanvas: characterScreen.createMiuSpriteCanvas
+    });
+
+    const requiredMethods = [
+      "initializeMiyuSquareWorld",
+      "startWorldLoop",
+      "stopWorldLoop",
+      "setMovementKey",
+      "interactInWorld"
+    ];
+
+    const isRuntimeValid = requiredMethods.every((methodName) => runtime && typeof runtime[methodName] === "function");
+    if (!isRuntimeValid) {
+      throw new Error("Runtime arayüzü eksik.");
+    }
+
+    return { ...fallbackRuntime, ...runtime, available: true };
+  } catch (error) {
+    console.error("Dünya runtime başlatılamadı:", error);
+    return fallbackRuntime;
+  }
+}
+
+const worldRuntime = createSafeWorldRuntime();
 
 function updateSelectedWorldText() {
   const world = getWorldById(state.selectedWorldId);
@@ -243,6 +374,23 @@ window.addEventListener("keydown", (event) => {
     return;
   }
 
+  if (worldRuntime.isFashionShopOpen() && worldRuntime.isFashionShopKey(key)) {
+    event.preventDefault();
+    if (event.repeat && key !== "q") {
+      return;
+    }
+    worldRuntime.handleFashionShopKey(key);
+    return;
+  }
+
+  if (worldRuntime.isFashionShopOpen() && WORLD_CONTROL_KEYS.has(key)) {
+    event.preventDefault();
+    if (key === "e" && !event.repeat) {
+      worldRuntime.closeFashionShop();
+    }
+    return;
+  }
+
   if (!WORLD_CONTROL_KEYS.has(key)) {
     return;
   }
@@ -350,6 +498,11 @@ backButton.addEventListener("click", () => {
 });
 
 enterWorldButton.addEventListener("click", () => {
+  if (!worldRuntime.available) {
+    window.alert("Dünya modülü yüklenemedi. Sayfayı yenileyip tekrar dene.");
+    return;
+  }
+
   const world = getWorldById(state.selectedWorldId);
   if (world.id !== "miu-square") {
     window.alert(`${world.name} henüz yapım aşamasında. Şimdilik Miyu Meydanı'na girebilirsin.`);

@@ -1,18 +1,16 @@
-(function (global) {
+﻿(function (global) {
   const { clamp, pickRandom, randomInt } = global.MiuCore;
   const {
     CAFE_GAME_KEYS,
     CAFE_HEIGHT,
-    CAFE_RECIPES,
     CAFE_WIDTH,
-    CAFE_CUSTOMER_NAMES,
-    CLUB_DANCE_KEYS,
-    CLUB_DANCE_KEY_TIME_BASE,
-    CLUB_DANCE_KEY_TIME_MIN,
     CLUB_GAME_KEYS,
     CLUB_HEIGHT,
     CLUB_WIDTH,
-    WORLD_AMBIENCE_PROFILES,
+    HALL_HEIGHT,
+    HALL_WIDTH,
+    FASHION_SHOP_ITEMS,
+    FASHION_SHOP_KEYS,
     WORLD_BLOCKS,
     WORLD_COLLECTIBLE_RESPAWN_MS,
     WORLD_CONTROL_KEYS,
@@ -29,2821 +27,1758 @@
     WORLD_WIDTH,
     WORLD_ZONES,
     createCafeSceneState,
-    createClubSceneState
+    createClubSceneState,
+    createTownHallSceneState,
+    createFashionShopState
   } = global.MiuWorldMiuSquare;
 
-function createInitialWorldState() {
-  return {
-    running: false,
-    rafId: null,
-    lastTime: 0,
-    mode: "square",
-    partyStars: 0,
-    dailyGiftClaimed: false,
-    collectibles: [],
-    nextCollectibleRespawnAt: 0,
-    emote: {
-      text: "",
-      until: 0
-    },
-    camera: {
-      x: 0,
-      y: 0
-    },
-    currentZoneName: "",
-    keys: {
-      up: false,
-      down: false,
-      left: false,
-      right: false
-    },
-    mouse: {
-      active: false,
-      x: 0,
-      y: 0,
-      screenX: 0,
-      screenY: 0
-    },
-    player: null,
-    npcs: [],
-    interactables: [],
-    chatText: "",
-    chatUntil: 0,
-    hintText: "",
-    snowDots: [],
-    ambience: {
-      context: null,
-      masterGain: null,
-      nextNoteAt: 0,
-      step: 0,
-      profileKey: "default"
-    },
-    eventCycle: {
-      dateKey: "",
-      schedule: [],
-      currentHour: -1,
-      currentEvent: null,
-      nextEvent: null
-    },
-    cafe: createCafeSceneState(),
-    club: createClubSceneState()
-  };
-}
-
-function createWorldRuntime({
-  PARTS,
-  state,
-  worldState,
-  worldCanvas,
-  worldCtx,
-  worldTitleText,
-  worldStatusText,
-  worldHelpText,
-  worldChatText,
-  getWorldById,
-  clonePartState,
-  createMiuSpriteCanvas
-}) {
-function getCurrentZone(x, y) {
-  return (
-    WORLD_ZONES.find((item) => {
-      return x >= item.x && x <= item.x + item.w && y >= item.y && y <= item.y + item.h;
-    }) || null
-  );
-}
-
-function getCurrentZoneName(x, y) {
-  const zone = getCurrentZone(x, y);
-  return zone ? zone.name : "Meydan Çevresi";
-}
-
-function getCurrentAmbienceProfile() {
-  if (worldState.mode === "cafe") {
-    return WORLD_AMBIENCE_PROFILES["cafe-interior"] || WORLD_AMBIENCE_PROFILES.default;
-  }
-  if (worldState.mode === "club") {
-    return WORLD_AMBIENCE_PROFILES["club-interior"] || WORLD_AMBIENCE_PROFILES.default;
-  }
-
-  if (!worldState.player) {
-    return WORLD_AMBIENCE_PROFILES.default;
-  }
-
-  const zone = getCurrentZone(worldState.player.x, worldState.player.y);
-  if (!zone) {
-    return WORLD_AMBIENCE_PROFILES.default;
-  }
-
-  return WORLD_AMBIENCE_PROFILES[zone.id] || WORLD_AMBIENCE_PROFILES.default;
-}
-
-function getTodayKey() {
-  const now = new Date();
-  const yyyy = String(now.getFullYear());
-  const mm = String(now.getMonth() + 1).padStart(2, "0");
-  const dd = String(now.getDate()).padStart(2, "0");
-  return `${yyyy}${mm}${dd}`;
-}
-
-function getDeterministicSeed(input) {
-  let seed = 0;
-  for (let i = 0; i < input.length; i += 1) {
-    seed = (seed * 31 + input.charCodeAt(i)) % 2147483647;
-  }
-  return seed || 1;
-}
-
-function createSeededRandom(seed) {
-  let value = seed % 2147483647;
-  if (value <= 0) {
-    value += 2147483646;
-  }
-
-  return () => {
-    value = (value * 16807) % 2147483647;
-    return (value - 1) / 2147483646;
-  };
-}
-
-function buildDailyEventSchedule(dateKey) {
-  const schedule = [];
-  const seed = getDeterministicSeed(dateKey);
-  const random = createSeededRandom(seed);
-  const eventCount = WORLD_EVENT_LIBRARY.length;
-  const offset = Math.floor(random() * eventCount);
-
-  for (let hour = 0; hour < 24; hour += 1) {
-    const roll = Math.floor(random() * eventCount);
-    const eventIndex = (offset + hour * 2 + roll) % eventCount;
-    const eventInfo = WORLD_EVENT_LIBRARY[eventIndex];
-    schedule.push({
-      hour,
-      ...eventInfo
-    });
-  }
-
-  return schedule;
-}
-
-function formatHour(hour) {
-  return `${String(hour).padStart(2, "0")}:00`;
-}
-
-function getNoticeBoardMessage(currentEvent, nextEvent) {
-  return `Duyuru Panosu: ${formatHour(currentEvent.hour)} ${currentEvent.title}. ${currentEvent.boardText} Sonraki etkinlik ${formatHour(nextEvent.hour)} ${nextEvent.title}.`;
-}
-
-function refreshEventCycle(forceAnnounce = false) {
-  const todayKey = getTodayKey();
-  if (worldState.eventCycle.dateKey !== todayKey || worldState.eventCycle.schedule.length !== 24) {
-    worldState.eventCycle.dateKey = todayKey;
-    worldState.eventCycle.schedule = buildDailyEventSchedule(todayKey);
-    worldState.eventCycle.currentHour = -1;
-  }
-
-  const currentHour = new Date().getHours();
-  if (worldState.eventCycle.currentHour === currentHour) {
-    return;
-  }
-
-  worldState.eventCycle.currentHour = currentHour;
-  worldState.eventCycle.currentEvent = worldState.eventCycle.schedule[currentHour];
-  worldState.eventCycle.nextEvent = worldState.eventCycle.schedule[(currentHour + 1) % 24];
-
-  const noticeBoard = worldState.interactables.find((item) => item.id === "notice-board");
-  if (noticeBoard) {
-    noticeBoard.message = getNoticeBoardMessage(
-      worldState.eventCycle.currentEvent,
-      worldState.eventCycle.nextEvent
-    );
-  }
-
-  if (!forceAnnounce) {
-    return;
-  }
-
-  setWorldChat(
-    `Etkinlik güncellendi: ${worldState.eventCycle.currentEvent.title} başladı. Sonraki: ${formatHour(worldState.eventCycle.nextEvent.hour)} ${worldState.eventCycle.nextEvent.title}.`,
-    3800
-  );
-}
-
-function ensureWorldAudio() {
-  const AudioContextClass = window.AudioContext || window.webkitAudioContext;
-  if (!AudioContextClass) {
-    return null;
-  }
-
-  if (!worldState.ambience.context) {
-    const context = new AudioContextClass();
-    const masterGain = context.createGain();
-    masterGain.gain.value = 0.0001;
-    masterGain.connect(context.destination);
-
-    worldState.ambience.context = context;
-    worldState.ambience.masterGain = masterGain;
-    worldState.ambience.nextNoteAt = context.currentTime + 0.08;
-    worldState.ambience.step = 0;
-    worldState.ambience.profileKey = "default";
-  }
-
-  if (worldState.ambience.context.state === "suspended") {
-    worldState.ambience.context.resume().catch(() => {});
-  }
-
-  if (worldState.ambience.masterGain) {
-    worldState.ambience.masterGain.gain.setTargetAtTime(
-      0.2,
-      worldState.ambience.context.currentTime,
-      0.12
-    );
-  }
-
-  return worldState.ambience.context;
-}
-
-function stopWorldAudio() {
-  if (!worldState.ambience.context || !worldState.ambience.masterGain) {
-    return;
-  }
-
-  worldState.ambience.masterGain.gain.setTargetAtTime(
-    0.0001,
-    worldState.ambience.context.currentTime,
-    0.08
-  );
-}
-
-function scheduleAmbienceNote(profile, startAt, step) {
-  if (!worldState.ambience.context || !worldState.ambience.masterGain) {
-    return;
-  }
-
-  const context = worldState.ambience.context;
-  const oscillator = context.createOscillator();
-  const gain = context.createGain();
-  const offset = profile.offsets[step % profile.offsets.length];
-  const frequency = profile.base * Math.pow(2, offset / 12);
-
-  oscillator.type = profile.wave;
-  oscillator.frequency.setValueAtTime(frequency, startAt);
-  gain.gain.setValueAtTime(0.0001, startAt);
-  gain.gain.linearRampToValueAtTime(profile.volume, startAt + 0.025);
-  gain.gain.exponentialRampToValueAtTime(0.0001, startAt + profile.duration);
-
-  oscillator.connect(gain);
-  gain.connect(worldState.ambience.masterGain);
-  oscillator.start(startAt);
-  oscillator.stop(startAt + profile.duration + 0.05);
-}
-
-function updateWorldAmbience() {
-  if (!worldState.running || !worldState.player) {
-    return;
-  }
-
-  const context = worldState.ambience.context;
-  if (!context) {
-    return;
-  }
-
-  const zone = getCurrentZone(worldState.player.x, worldState.player.y);
-  let profileKey = "default";
-  if (worldState.mode === "cafe") {
-    profileKey = "cafe-interior";
-  } else if (worldState.mode === "club") {
-    profileKey = "club-interior";
-  } else if (zone) {
-    profileKey = zone.id;
-  }
-  const profile = WORLD_AMBIENCE_PROFILES[profileKey] || WORLD_AMBIENCE_PROFILES.default;
-  if (worldState.ambience.profileKey !== profileKey) {
-    worldState.ambience.profileKey = profileKey;
-    worldState.ambience.step = 0;
-    worldState.ambience.nextNoteAt = context.currentTime + 0.04;
-  }
-
-  if (worldState.ambience.nextNoteAt < context.currentTime - 2) {
-    worldState.ambience.nextNoteAt = context.currentTime + 0.04;
-  }
-
-  while (worldState.ambience.nextNoteAt < context.currentTime + 0.12) {
-    scheduleAmbienceNote(profile, worldState.ambience.nextNoteAt, worldState.ambience.step);
-    worldState.ambience.step += 1;
-    worldState.ambience.nextNoteAt += profile.interval;
-  }
-}
-
-function getNpcEventLine() {
-  const currentEvent = worldState.eventCycle.currentEvent;
-  if (!currentEvent) {
-    return null;
-  }
-  return currentEvent.npcLine;
-}
-
-function getActiveWorldSize() {
-  if (worldState.mode === "cafe") {
-    return { width: worldState.cafe.width, height: worldState.cafe.height };
-  }
-  if (worldState.mode === "club") {
-    return { width: worldState.club.width, height: worldState.club.height };
-  }
-  return { width: WORLD_WIDTH, height: WORLD_HEIGHT };
-}
-
-function getActiveWorldBlocks() {
-  if (worldState.mode === "cafe") {
-    const tableBlocks = worldState.cafe.tables.map((table) => ({
-      x: table.x - 18,
-      y: table.y - 14,
-      w: 36,
-      h: 28
-    }));
-    return [...worldState.cafe.counterBlocks, ...tableBlocks];
-  }
-
-  if (worldState.mode === "club") {
-    return worldState.club.blocks;
-  }
-
-  return WORLD_BLOCKS;
-}
-
-function getDistanceToZone(zone, x, y) {
-  const centerX = zone.x + zone.w / 2;
-  const centerY = zone.y + zone.h / 2;
-  return Math.hypot(centerX - x, centerY - y);
-}
-
-function isPointInsideZone(zone, x, y) {
-  return x >= zone.x && x <= zone.x + zone.w && y >= zone.y && y <= zone.y + zone.h;
-}
-
-function getRandomSquareSpawnPoint() {
-  for (let attempt = 0; attempt < 90; attempt += 1) {
-    const x = 26 + randomInt(WORLD_WIDTH - 52);
-    const y = 26 + randomInt(WORLD_HEIGHT - 52);
-    const hitbox = getHitboxAt(x, y);
-    const blocked = WORLD_BLOCKS.some((block) => intersectsRect(hitbox, block));
-    const tooCloseToCenter = Math.hypot(x - 430, y - 280) < 46;
-    if (!blocked && !tooCloseToCenter) {
-      return { x, y };
-    }
-  }
-
-  return { x: 430, y: 350 };
-}
-
-function createSquareCollectibles(count) {
-  const items = [];
-  for (let i = 0; i < count; i += 1) {
-    const point = getRandomSquareSpawnPoint();
-    items.push({
-      id: `star-${i}-${randomInt(9999)}`,
-      x: point.x,
-      y: point.y,
-      phase: Math.random() * Math.PI * 2
-    });
-  }
-  return items;
-}
-
-function spawnSquareCollectible() {
-  if (worldState.collectibles.length >= WORLD_MAX_COLLECTIBLE_COUNT) {
-    return;
-  }
-
-  const point = getRandomSquareSpawnPoint();
-  worldState.collectibles.push({
-    id: `star-${Date.now()}-${randomInt(9999)}`,
-    x: point.x,
-    y: point.y,
-    phase: Math.random() * Math.PI * 2
-  });
-}
-
-function updateSquareCollectibles(now) {
-  if (worldState.mode !== "square" || !worldState.player) {
-    return;
-  }
-
-  let collectedCount = 0;
-  worldState.collectibles = worldState.collectibles.filter((item) => {
-    const distance = Math.hypot(item.x - worldState.player.x, item.y - worldState.player.y);
-    if (distance > 16) {
-      return true;
-    }
-
-    collectedCount += 1;
-    return false;
-  });
-
-  if (collectedCount > 0) {
-    worldState.partyStars += collectedCount;
-    triggerPlayerEmote("YILDIZ!");
-    if (collectedCount === 1) {
-      setWorldChat(`Bir Miyu Yıldızı topladın. Toplam: ${worldState.partyStars}`, 1300);
-    } else {
-      setWorldChat(`${collectedCount} yıldız birden topladın. Toplam: ${worldState.partyStars}`, 1500);
-    }
-  }
-
-  if (now >= worldState.nextCollectibleRespawnAt) {
-    spawnSquareCollectible();
-    worldState.nextCollectibleRespawnAt = now + WORLD_COLLECTIBLE_RESPAWN_MS;
-  }
-}
-
-function triggerPlayerEmote(text = "") {
-  if (!worldState.player) {
-    return;
-  }
-
-  if (!text) {
-    const pool = worldState.mode === "club" ? ["DANS!", "RITIM!", "KOMBO!"] : ["SELAM!", "HARIKA!", "MIU!"];
-    worldState.emote.text = pickRandom(pool);
-  } else {
-    worldState.emote.text = text;
-  }
-  worldState.emote.until = performance.now() + 900;
-}
-
-function getCafeSeatById(seatId) {
-  return worldState.cafe.seats.find((seat) => seat.id === seatId) || null;
-}
-
-function getCafeSeatDirection(seat) {
-  if (!seat) {
-    return "";
-  }
-
-  if (seat.direction) {
-    return seat.direction;
-  }
-
-  const parts = seat.id.split("-");
-  return parts[parts.length - 1] || "";
-}
-
-function getCafeSeatSitPosition(seat) {
-  const direction = getCafeSeatDirection(seat);
-  if (direction === "n") {
-    return { x: seat.x, y: seat.y - 2 };
-  }
-  if (direction === "s") {
-    return { x: seat.x, y: seat.y + 12 };
-  }
-  if (direction === "w") {
-    return { x: seat.x - 8, y: seat.y + 6 };
-  }
-  if (direction === "e") {
-    return { x: seat.x + 8, y: seat.y + 6 };
-  }
-
-  return { x: seat.x, y: seat.y + 12 };
-}
-
-function getCafeSeatStandPosition(seat) {
-  const direction = getCafeSeatDirection(seat);
-  let target = { x: seat.x, y: seat.y + 20 };
-  if (direction === "n") {
-    target = { x: seat.x, y: seat.y - 16 };
-  } else if (direction === "s") {
-    target = { x: seat.x, y: seat.y + 20 };
-  } else if (direction === "w") {
-    target = { x: seat.x - 20, y: seat.y + 8 };
-  } else if (direction === "e") {
-    target = { x: seat.x + 20, y: seat.y + 8 };
-  }
-
-  const activeSize = getActiveWorldSize();
-  return {
-    x: clamp(target.x, 14, activeSize.width - 14),
-    y: clamp(target.y, 14, activeSize.height - 14)
-  };
-}
-
-function getNearbyCafeSeat() {
-  if (!worldState.player || worldState.mode !== "cafe") {
-    return null;
-  }
-
-  let nearest = null;
-  let minDistance = 9999;
-  worldState.cafe.seats.forEach((seat) => {
-    const distance = Math.hypot(seat.x - worldState.player.x, seat.y - worldState.player.y);
-    if (distance < 26 && distance < minDistance) {
-      nearest = seat;
-      minDistance = distance;
-    }
-  });
-  return nearest;
-}
-
-function standFromCafeSeat() {
-  const seat = getCafeSeatById(worldState.cafe.seatedSeatId);
-  if (!seat || !worldState.player) {
-    worldState.cafe.seatedSeatId = null;
-    return;
-  }
-
-  seat.occupiedBy = null;
-  worldState.cafe.seatedSeatId = null;
-  const standPosition = getCafeSeatStandPosition(seat);
-  worldState.player.x = standPosition.x;
-  worldState.player.y = standPosition.y;
-}
-
-function sitOnCafeSeat(seat) {
-  if (!worldState.player || !seat) {
-    return;
-  }
-
-  if (seat.occupiedBy && seat.occupiedBy !== "player") {
-    setWorldChat("Bu sandalye dolu, başka bir yere otur.", 1600);
-    return;
-  }
-
-  if (worldState.cafe.seatedSeatId && worldState.cafe.seatedSeatId !== seat.id) {
-    standFromCafeSeat();
-  }
-
-  worldState.cafe.seatedSeatId = seat.id;
-  seat.occupiedBy = "player";
-  const sitPosition = getCafeSeatSitPosition(seat);
-  worldState.player.x = sitPosition.x;
-  worldState.player.y = sitPosition.y;
-  setWorldChat("Masaya oturdun. Tekrar E ile ayağa kalkabilirsin.", 1800);
-}
-
-function getCafeRecipeById(recipeId) {
-  return CAFE_RECIPES.find((recipe) => recipe.id === recipeId) || CAFE_RECIPES[0];
-}
-
-function getCafeCurrentOrderStepInfo(order) {
-  const recipe = getCafeRecipeById(order.recipeId);
-  const stepIndex = clamp(order.stepIndex, 0, recipe.steps.length - 1);
-  return {
-    recipe,
-    stepIndex,
-    step: recipe.steps[stepIndex]
-  };
-}
-
-function getCafeOrderProgress(order) {
-  const recipe = getCafeRecipeById(order.recipeId);
-  return clamp(order.stepIndex / recipe.steps.length, 0, 1);
-}
-
-function createCafeOrder() {
-  const recipe = pickRandom(CAFE_RECIPES);
-  const customer = pickRandom(CAFE_CUSTOMER_NAMES);
-  return {
-    customer,
-    recipeId: recipe.id,
-    recipeLabel: recipe.label,
-    recipeIcon: recipe.icon,
-    stepIndex: 0,
-    targetSteps: recipe.steps.map((step) => randomInt(step.options.length))
-  };
-}
-
-function createCafeOrderPrompt(order) {
-  const stepInfo = getCafeCurrentOrderStepInfo(order);
-  const options = stepInfo.step.options.map((option, index) => `[${index + 1}] ${option}`).join(" • ");
-  return `Sipariş: ${order.customer} için ${stepInfo.recipe.label}. Aşama ${stepInfo.stepIndex + 1}/${stepInfo.recipe.steps.length}: ${stepInfo.step.prompt}. ${options}`;
-}
-
-function prepareNextCafeOrder(delayMs = 0) {
-  const game = worldState.cafe.game;
-  game.currentOrder = createCafeOrder();
-  const now = performance.now();
-  const baseDuration = 15600 - Math.min(game.streak, 6) * 1100;
-  game.orderEndAt = now + Math.max(9400, baseDuration) + delayMs;
-}
-
-function startCafeMiniGame() {
-  const game = worldState.cafe.game;
-  worldState.mouse.active = false;
-  if (!game.active) {
-    game.active = true;
-    game.streak = 0;
-  }
-
-  if (!game.currentOrder) {
-    prepareNextCafeOrder();
-  }
-
-  const orderText = createCafeOrderPrompt(game.currentOrder);
-  if (!game.tutorialShown) {
-    game.tutorialShown = true;
-    setWorldChat(
-      `Oyun başladı. Müşteri siparişi ekranın alt-ortasındaki "SİPARİŞ FİŞİ" panelinde. ${orderText}. 1-2-3 veya kutulara tıklayarak seçim yap, çıkış: Q.`,
-      5600
-    );
-    return;
-  }
-
-  setWorldChat(`Yeni sipariş hazır. ${orderText}. 1-2-3 veya kutularla seçim yap.`, 3400);
-}
-
-function stopCafeMiniGame(showMessage = true) {
-  const game = worldState.cafe.game;
-  game.active = false;
-  game.currentOrder = null;
-  game.orderEndAt = 0;
-  if (showMessage) {
-    setWorldChat("Hazırlama oyunundan çıktın.", 1400);
-  }
-}
-
-function resolveCafeGameChoice(choiceIndex) {
-  const game = worldState.cafe.game;
-  if (!game.active || !game.currentOrder) {
-    return;
-  }
-
-  const stepInfo = getCafeCurrentOrderStepInfo(game.currentOrder);
-  if (choiceIndex < 0 || choiceIndex >= stepInfo.step.options.length) {
-    return;
-  }
-
-  const selectedLabel = stepInfo.step.options[choiceIndex];
-  const correctChoiceIndex = game.currentOrder.targetSteps[stepInfo.stepIndex];
-  const correctLabel = stepInfo.step.options[correctChoiceIndex];
-
-  if (choiceIndex === correctChoiceIndex) {
-    game.score += 4;
-    game.currentOrder.stepIndex += 1;
-
-    const isCompleted = game.currentOrder.stepIndex >= stepInfo.recipe.steps.length;
-    if (isCompleted) {
-      game.score += 12 + game.streak * 3;
-      game.served += 1;
-      game.streak += 1;
-      setWorldChat(`${game.currentOrder.customer} için ${stepInfo.recipe.label} hazır. Harika servis! Seri x${game.streak}`, 1900);
-      prepareNextCafeOrder(360);
-      return;
-    }
-
-    const nextStepInfo = getCafeCurrentOrderStepInfo(game.currentOrder);
-    game.orderEndAt += 1300;
-    setWorldChat(`Doğru seçim: ${selectedLabel}. Sonraki adım: ${nextStepInfo.step.prompt}.`, 1550);
-    return;
-  }
-
-  game.misses += 1;
-  game.streak = 0;
-  setWorldChat(`Olmadı. Doğru seçim ${correctLabel} olmalıydı.`, 1650);
-  prepareNextCafeOrder(220);
-}
-
-function updateCafeMiniGame(now) {
-  const game = worldState.cafe.game;
-  if (!game.active || !game.currentOrder) {
-    return;
-  }
-
-  if (now > game.orderEndAt) {
-    const stepInfo = getCafeCurrentOrderStepInfo(game.currentOrder);
-    game.misses += 1;
-    game.streak = 0;
-    setWorldChat(`Süre doldu. ${game.currentOrder.customer} için ${stepInfo.recipe.label} siparişi kaçtı.`, 1700);
-    prepareNextCafeOrder(200);
-  }
-}
-
-function getCafeGameOverlayLayout() {
-  const panelW = 360;
-  const panelH = 164;
-  const panelX = Math.max(8, Math.floor((worldCanvas.width - panelW) / 2));
-  const panelY = worldCanvas.height - panelH - 8;
-  const choiceGap = 8;
-  const choiceW = Math.floor((panelW - 28 - choiceGap * 2) / 3);
-  const choiceH = 48;
-  const choiceY = panelY + panelH - choiceH - 10;
-  const choiceRects = [];
-
-  for (let index = 0; index < 3; index += 1) {
-    choiceRects.push({
-      index,
-      x: panelX + 10 + index * (choiceW + choiceGap),
-      y: choiceY,
-      w: choiceW,
-      h: choiceH
-    });
-  }
-
-  return {
-    panelX,
-    panelY,
-    panelW,
-    panelH,
-    previewX: panelX + 12,
-    previewY: panelY + 36,
-    previewW: 98,
-    previewH: 72,
-    choiceRects
-  };
-}
-
-function getCafeGameChoiceFromPoint(screenX, screenY) {
-  const game = worldState.cafe.game;
-  if (!game.active || !game.currentOrder) {
-    return null;
-  }
-
-  const layout = getCafeGameOverlayLayout();
-  const choice = layout.choiceRects.find((item) => {
-    return screenX >= item.x && screenX <= item.x + item.w && screenY >= item.y && screenY <= item.y + item.h;
-  });
-  return choice ? choice.index : null;
-}
-
-function isPointInsideCafeGamePanel(screenX, screenY) {
-  const game = worldState.cafe.game;
-  if (!game.active || !game.currentOrder) {
-    return false;
-  }
-
-  const layout = getCafeGameOverlayLayout();
-  return (
-    screenX >= layout.panelX &&
-    screenX <= layout.panelX + layout.panelW &&
-    screenY >= layout.panelY &&
-    screenY <= layout.panelY + layout.panelH
-  );
-}
-
-function enterCafeScene() {
-  if (!worldState.player) {
-    return;
-  }
-
-  stopClubDanceGame(false);
-  worldState.cafe.previousWorldPosition = {
-    x: worldState.player.x,
-    y: worldState.player.y
-  };
-  worldState.mode = "cafe";
-  worldState.cafe.seatedSeatId = null;
-  worldState.cafe.seats.forEach((seat) => {
-    seat.occupiedBy = null;
-  });
-  worldState.mouse.active = false;
-  worldState.player.x = worldState.cafe.entryPoint.x;
-  worldState.player.y = worldState.cafe.entryPoint.y;
-  worldState.mouse.x = worldState.player.x;
-  worldState.mouse.y = worldState.player.y;
-  worldState.mouse.screenX = worldCanvas.width / 2;
-  worldState.mouse.screenY = worldCanvas.height / 2;
-
-  const baristaParts = buildNpcParts(13);
-  worldState.cafe.barista = {
-    name: "Barista Momo",
-    x: 548,
-    y: 140,
-    parts: baristaParts,
-    sprite: createMiuSpriteCanvas(baristaParts)
-  };
-
-  worldState.camera.x = clamp(worldState.player.x - worldCanvas.width / 2, 0, CAFE_WIDTH - worldCanvas.width);
-  worldState.camera.y = clamp(worldState.player.y - worldCanvas.height / 2, 0, CAFE_HEIGHT - worldCanvas.height);
-  worldState.currentZoneName = "Miyu Kafe İç Mekanı";
-  ensureWorldAudio();
-  setWorldChat("Kafeye hoş geldin. Masalara oturabilir, kasada kahve ve pasta hazırlama oyununu oynayabilirsin.", 3400);
-}
-
-function exitCafeScene() {
-  if (!worldState.player) {
-    return;
-  }
-
-  if (worldState.cafe.seatedSeatId) {
-    standFromCafeSeat();
-  }
-
-  stopCafeMiniGame(false);
-  worldState.mode = "square";
-  worldState.mouse.active = false;
-
-  const previousPosition = worldState.cafe.previousWorldPosition || { x: 130, y: 188 };
-  worldState.player.x = previousPosition.x;
-  worldState.player.y = previousPosition.y;
-  worldState.mouse.x = worldState.player.x;
-  worldState.mouse.y = worldState.player.y;
-  worldState.mouse.screenX = worldCanvas.width / 2;
-  worldState.mouse.screenY = worldCanvas.height / 2;
-  worldState.camera.x = clamp(worldState.player.x - worldCanvas.width / 2, 0, WORLD_WIDTH - worldCanvas.width);
-  worldState.camera.y = clamp(worldState.player.y - worldCanvas.height / 2, 0, WORLD_HEIGHT - worldCanvas.height);
-  setWorldChat("Meydan tarafına geri döndün.", 1600);
-}
-
-function getClubSeatById(seatId) {
-  return worldState.club.seats.find((seat) => seat.id === seatId) || null;
-}
-
-function getClubSeatDirection(seat) {
-  if (!seat) {
-    return "";
-  }
-  if (seat.direction) {
-    return seat.direction;
-  }
-  const parts = seat.id.split("-");
-  return parts[parts.length - 1] || "";
-}
-
-function getClubSeatSitPosition(seat) {
-  const direction = getClubSeatDirection(seat);
-  if (direction === "n") {
-    return { x: seat.x, y: seat.y - 2 };
-  }
-  if (direction === "s") {
-    return { x: seat.x, y: seat.y + 12 };
-  }
-  if (direction === "w") {
-    return { x: seat.x - 8, y: seat.y + 6 };
-  }
-  if (direction === "e") {
-    return { x: seat.x + 8, y: seat.y + 6 };
-  }
-  return { x: seat.x, y: seat.y + 12 };
-}
-
-function getClubSeatStandPosition(seat) {
-  const direction = getClubSeatDirection(seat);
-  let target = { x: seat.x, y: seat.y + 20 };
-  if (direction === "n") {
-    target = { x: seat.x, y: seat.y - 16 };
-  } else if (direction === "s") {
-    target = { x: seat.x, y: seat.y + 20 };
-  } else if (direction === "w") {
-    target = { x: seat.x - 20, y: seat.y + 8 };
-  } else if (direction === "e") {
-    target = { x: seat.x + 20, y: seat.y + 8 };
-  }
-
-  const activeSize = getActiveWorldSize();
-  return {
-    x: clamp(target.x, 14, activeSize.width - 14),
-    y: clamp(target.y, 14, activeSize.height - 14)
-  };
-}
-
-function getNearbyClubSeat() {
-  if (!worldState.player || worldState.mode !== "club") {
-    return null;
-  }
-
-  let nearest = null;
-  let minDistance = 9999;
-  worldState.club.seats.forEach((seat) => {
-    const distance = Math.hypot(seat.x - worldState.player.x, seat.y - worldState.player.y);
-    if (distance < 28 && distance < minDistance) {
-      nearest = seat;
-      minDistance = distance;
-    }
-  });
-  return nearest;
-}
-
-function standFromClubSeat() {
-  const seat = getClubSeatById(worldState.club.seatedSeatId);
-  if (!seat || !worldState.player) {
-    worldState.club.seatedSeatId = null;
-    return;
-  }
-
-  seat.occupiedBy = null;
-  worldState.club.seatedSeatId = null;
-  const standPosition = getClubSeatStandPosition(seat);
-  worldState.player.x = standPosition.x;
-  worldState.player.y = standPosition.y;
-}
-
-function sitOnClubSeat(seat) {
-  if (!worldState.player || !seat) {
-    return;
-  }
-
-  if (seat.occupiedBy && seat.occupiedBy !== "player") {
-    setWorldChat("Bu koltuk dolu, kenardaki başka bir yere otur.", 1600);
-    return;
-  }
-
-  if (worldState.club.seatedSeatId && worldState.club.seatedSeatId !== seat.id) {
-    standFromClubSeat();
-  }
-
-  worldState.club.seatedSeatId = seat.id;
-  seat.occupiedBy = "player";
-  const sitPosition = getClubSeatSitPosition(seat);
-  worldState.player.x = sitPosition.x;
-  worldState.player.y = sitPosition.y;
-  setWorldChat("Kulüp kenarındaki koltuğa oturdun. E ile ayağa kalkabilirsin.", 1800);
-}
-
-function getClubDanceKeySymbol(key) {
-  if (key === "w") {
-    return "^";
-  }
-  if (key === "a") {
-    return "‹";
-  }
-  if (key === "s") {
-    return "v";
-  }
-  if (key === "d") {
-    return "›";
-  }
-  return "?";
-}
-
-function getClubDanceKeyLabel(key) {
-  return `${key.toUpperCase()} ${getClubDanceKeySymbol(key)}`;
-}
-
-function createClubDanceSequence(length) {
-  const sequence = [];
-  for (let i = 0; i < length; i += 1) {
-    sequence.push(CLUB_DANCE_KEYS[randomInt(CLUB_DANCE_KEYS.length)]);
-  }
-  return sequence;
-}
-
-function getClubDanceCurrentKey() {
-  const game = worldState.club.game;
-  if (!game.sequence.length || game.inputIndex >= game.sequence.length) {
-    return null;
-  }
-  return game.sequence[game.inputIndex];
-}
-
-function getClubDanceKeyDurationMs() {
-  const game = worldState.club.game;
-  const sequenceLength = Math.max(1, game.sequence.length);
-  const perKeyWindow = Math.max(
-    CLUB_DANCE_KEY_TIME_MIN,
-    CLUB_DANCE_KEY_TIME_BASE - Math.min(10, game.streak) * 55
-  );
-  return Math.max(3000, perKeyWindow * sequenceLength - Math.min(8, game.streak) * 120);
-}
-
-function setClubDanceStepTimer(delayMs = 0) {
-  const game = worldState.club.game;
-  game.keyDurationMs = getClubDanceKeyDurationMs();
-  const now = performance.now();
-  game.keyEndAt = now + game.keyDurationMs + delayMs;
-  game.roundEndAt = game.keyEndAt;
-}
-
-function getClubDanceMsLeft(now = performance.now()) {
-  const game = worldState.club.game;
-  return Math.max(0, game.keyEndAt - now);
-}
-
-function markClubDanceInputFlash(key) {
-  const game = worldState.club.game;
-  game.inputFlashKey = key;
-  game.inputFlashUntil = performance.now() + 220;
-}
-
-function prepareNextClubDanceRound(delayMs = 0) {
-  const game = worldState.club.game;
-  const sequenceLength = 4 + Math.min(4, Math.floor(game.streak / 2));
-  game.sequence = createClubDanceSequence(sequenceLength);
-  game.inputIndex = 0;
-  setClubDanceStepTimer(delayMs);
-}
-
-function startClubDanceGame() {
-  const game = worldState.club.game;
-  worldState.mouse.active = false;
-  worldState.keys.up = false;
-  worldState.keys.down = false;
-  worldState.keys.left = false;
-  worldState.keys.right = false;
-  if (!game.active) {
-    game.active = true;
-    game.streak = 0;
-  }
-
-  if (!game.sequence.length) {
-    prepareNextClubDanceRound();
-  }
-
-  const sequencePreview = game.sequence.map((key) => key.toUpperCase()).join(" ");
-  if (!game.tutorialShown) {
-    game.tutorialShown = true;
-    setWorldChat(`Dans oyunu başladı. Sıra panelini takip et: ${sequencePreview}. Tüm sırayı süre barı bitmeden tamamla. Tuşlar W A S D, çıkış: Q.`, 5200);
-    return;
-  }
-
-  setWorldChat(`Yeni dans sırası: ${sequencePreview}. Süre barı bitmeden tüm sırayı tamamla!`, 2800);
-}
-
-function stopClubDanceGame(showMessage = true) {
-  const game = worldState.club.game;
-  game.active = false;
-  game.sequence = [];
-  game.inputIndex = 0;
-  game.roundEndAt = 0;
-  game.keyEndAt = 0;
-  game.keyDurationMs = 0;
-  game.inputFlashUntil = 0;
-  game.inputFlashKey = "";
-  if (showMessage) {
-    setWorldChat("Dans oyunundan çıktın.", 1400);
-  }
-}
-
-function resolveClubDanceInput(key) {
-  const game = worldState.club.game;
-  if (!game.active || !game.sequence.length) {
-    return;
-  }
-
-  const expected = getClubDanceCurrentKey();
-  if (!expected) {
-    return;
-  }
-
-  markClubDanceInputFlash(key);
-
-  if (key === expected) {
-    game.inputIndex += 1;
-    game.hits += 1;
-    game.score += 3;
-    if (game.inputIndex >= game.sequence.length) {
-      game.rounds += 1;
-      game.streak += 1;
-      game.score += 10 + game.streak * 3;
-      setWorldChat(`Kombo tamam! Seri x${game.streak}. Yeni sıra geliyor.`, 1600);
-      prepareNextClubDanceRound(300);
-      return;
-    }
-
-    const nextKey = getClubDanceCurrentKey();
-    if (nextKey) {
-      setWorldChat(`Doğru! Sıradaki: ${getClubDanceKeyLabel(nextKey)}`, 850);
-    }
-    return;
-  }
-
-  game.misses += 1;
-  game.rounds += 1;
-  game.streak = 0;
-  setWorldChat(`Ritim kaçtı. Beklenen ${getClubDanceKeyLabel(expected)} idi.`, 1600);
-  prepareNextClubDanceRound(280);
-}
-
-function updateClubDanceGame(now) {
-  const game = worldState.club.game;
-  if (!game.active || !game.sequence.length) {
-    return;
-  }
-
-  if (now > game.keyEndAt) {
-    const expected = getClubDanceCurrentKey();
-    game.misses += 1;
-    game.rounds += 1;
-    game.streak = 0;
-    if (expected) {
-      setWorldChat(`Süre doldu. Beklenen tuş ${getClubDanceKeyLabel(expected)} idi. Yeni sıra başlıyor.`, 1700);
-    } else {
-      setWorldChat("Süre doldu. Ritim sıfırlandı, yeni sıra başlıyor.", 1600);
-    }
-    prepareNextClubDanceRound(250);
-  }
-}
-
-function enterClubScene() {
-  if (!worldState.player) {
-    return;
-  }
-
-  stopCafeMiniGame(false);
-  worldState.club.previousWorldPosition = {
-    x: worldState.player.x,
-    y: worldState.player.y
-  };
-  worldState.mode = "club";
-  worldState.club.seatedSeatId = null;
-  worldState.club.seats.forEach((seat) => {
-    seat.occupiedBy = null;
-  });
-  worldState.mouse.active = false;
-  worldState.player.x = worldState.club.entryPoint.x;
-  worldState.player.y = worldState.club.entryPoint.y;
-  worldState.mouse.x = worldState.player.x;
-  worldState.mouse.y = worldState.player.y;
-  worldState.mouse.screenX = worldCanvas.width / 2;
-  worldState.mouse.screenY = worldCanvas.height / 2;
-
-  const djParts = buildNpcParts(17);
-  worldState.club.dj = {
-    name: "DJ Tekir",
-    x: 330,
-    y: 112,
-    parts: djParts,
-    sprite: createMiuSpriteCanvas(djParts)
-  };
-
-  worldState.camera.x = clamp(worldState.player.x - worldCanvas.width / 2, 0, CLUB_WIDTH - worldCanvas.width);
-  worldState.camera.y = clamp(worldState.player.y - worldCanvas.height / 2, 0, CLUB_HEIGHT - worldCanvas.height);
-  worldState.currentZoneName = "Sahne Kulübü İç Mekanı";
-  ensureWorldAudio();
-  setWorldChat("Kulübe hoş geldin. Dans pistine girip ritim oyununu başlatabilir, kenardaki koltuklara oturabilirsin.", 3600);
-}
-
-function exitClubScene() {
-  if (!worldState.player) {
-    return;
-  }
-
-  if (worldState.club.seatedSeatId) {
-    standFromClubSeat();
-  }
-
-  stopClubDanceGame(false);
-  worldState.club.seatedSeatId = null;
-  worldState.club.seats.forEach((seat) => {
-    seat.occupiedBy = null;
-  });
-  worldState.mode = "square";
-  worldState.mouse.active = false;
-
-  const previousPosition = worldState.club.previousWorldPosition || { x: 690, y: 468 };
-  worldState.player.x = previousPosition.x;
-  worldState.player.y = previousPosition.y;
-  worldState.mouse.x = worldState.player.x;
-  worldState.mouse.y = worldState.player.y;
-  worldState.mouse.screenX = worldCanvas.width / 2;
-  worldState.mouse.screenY = worldCanvas.height / 2;
-  worldState.camera.x = clamp(worldState.player.x - worldCanvas.width / 2, 0, WORLD_WIDTH - worldCanvas.width);
-  worldState.camera.y = clamp(worldState.player.y - worldCanvas.height / 2, 0, WORLD_HEIGHT - worldCanvas.height);
-  setWorldChat("Meydandaki kulüp girişine geri döndün.", 1600);
-}
-
-function paint(targetCtx, x, y, width, height, color) {
-  targetCtx.fillStyle = color;
-  targetCtx.fillRect(x, y, width, height);
-}
-function buildNpcParts(index) {
-  const parts = clonePartState(state);
-  const partKeys = Object.keys(PARTS);
-  partKeys.forEach((partKey) => {
-    parts[partKey].style = (index + randomInt(PARTS[partKey].styles.length)) % PARTS[partKey].styles.length;
-    parts[partKey].color = (index + 1 + randomInt(PARTS[partKey].colors.length)) % PARTS[partKey].colors.length;
-  });
-  return parts;
-}
-
-function pickNpcDirection() {
-  const angle = Math.random() * Math.PI * 2;
-  return {
-    vx: Math.cos(angle) * WORLD_NPC_SPEED,
-    vy: Math.sin(angle) * WORLD_NPC_SPEED
-  };
-}
-
-function buildWorldNpcs() {
-  const spawn = [
-    { x: 218, y: 266 },
-    { x: 352, y: 286 },
-    { x: 502, y: 278 },
-    { x: 646, y: 268 },
-    { x: 266, y: 470 },
-    { x: 486, y: 484 },
-    { x: 620, y: 470 }
-  ];
-
-  return WORLD_NPC_DEFS.map((npcDef, index) => {
-    const parts = buildNpcParts(index + 1);
-    const direction = pickNpcDirection();
+  function createInitialWorldState() {
     return {
-      ...npcDef,
-      x: spawn[index].x,
-      y: spawn[index].y,
-      parts,
-      sprite: createMiuSpriteCanvas(parts),
-      vx: direction.vx,
-      vy: direction.vy,
-      turnAt: 0,
-      nextTalkAt: 0
+      running: false,
+      rafId: null,
+      lastTime: 0,
+      mode: "square",
+      partyStars: 0,
+      dailyGiftClaimed: false,
+      collectibles: [],
+      nextCollectibleRespawnAt: 0,
+      emote: { text: "", until: 0 },
+      camera: { x: 0, y: 0 },
+      currentZoneName: "",
+      keys: { up: false, down: false, left: false, right: false },
+      mouse: { active: false, x: 0, y: 0, screenX: 0, screenY: 0 },
+      player: null,
+      npcs: [],
+      interactables: [],
+      chatText: "",
+      chatUntil: 0,
+      hintText: "",
+      snowDots: [],
+      ambience: { context: null, masterGain: null, nextNoteAt: 0, step: 0, profileKey: "default" },
+      eventCycle: { dateKey: "", schedule: [], currentHour: -1, currentEvent: null, nextEvent: null },
+      cafe: createCafeSceneState(),
+      club: createClubSceneState(),
+      hall: createTownHallSceneState(),
+      fashionShop: createFashionShopState()
     };
-  });
-}
-
-function buildWorldInteractables() {
-  return [
-    {
-      id: "cafe",
-      label: "Kafe",
-      x: 156,
-      y: 177,
-      w: 32,
-      h: 18,
-      message: "Kafe: Sıcak kakao, waffle ve sohbet masaları hazır."
-    },
-    {
-      id: "mini-games-board",
-      label: "Mini Oyun Panosu",
-      x: 420,
-      y: 161,
-      w: 34,
-      h: 18,
-      message: "Mini Oyun Panosu: Kart Yarışı, Buz Kaydırağı ve Kartopu Arenası sırada."
-    },
-    {
-      id: "market",
-      label: "Miyu Pazarı",
-      x: 291,
-      y: 265,
-      w: 30,
-      h: 18,
-      message: "Miyu Pazarı: Kozmetik takas noktası çok yakında açılıyor."
-    },
-    {
-      id: "fountain",
-      label: "Merkez Çeşme",
-      x: 421,
-      y: 266,
-      w: 20,
-      h: 20,
-      message: "Çeşme: Buradan anlık etkinlik duyurularını takip edebilirsin."
-    },
-    {
-      id: "portal",
-      label: "Portal Merkezi",
-      x: 682,
-      y: 178,
-      w: 34,
-      h: 18,
-      message: "Portal Merkezi: Bulut İskele ve Güneşli Orman geçişleri yakında aktif."
-    },
-    {
-      id: "fashion-shop",
-      label: "Moda Dükkanı",
-      x: 150,
-      y: 457,
-      w: 32,
-      h: 18,
-      message: "Moda Dükkanı: Kostüm, şapka ve aksesuar setleri yenilendi."
-    },
-    {
-      id: "pet-park",
-      label: "Pet Park",
-      x: 414,
-      y: 487,
-      w: 36,
-      h: 18,
-      message: "Pet Park: Dostlarınla mini parkur oynayabileceğin alan hazırlanıyor."
-    },
-    {
-      id: "stage-club",
-      label: "Sahne Kulübü",
-      x: 680,
-      y: 466,
-      w: 36,
-      h: 18,
-      message: "Sahne Kulübü: DJ gecesi ve dans partisi etkinliği 20:00'de."
-    },
-    {
-      id: "notice-board",
-      label: "Duyuru Panosu",
-      x: 500,
-      y: 235,
-      w: 24,
-      h: 16,
-      message: "Duyuru Panosu: Bugün 3 sosyal etkinlik planlandı."
-    },
-    {
-      id: "daily-gift",
-      label: "Sürpriz Kutu",
-      x: 538,
-      y: 306,
-      w: 22,
-      h: 16,
-      message: "Sürpriz Kutu: Günlük hediyeni almak için yaklaş."
-    }
-  ];
-}
-
-function buildSnowDots() {
-  if (worldState.snowDots.length > 0) {
-    return;
   }
 
-  for (let i = 0; i < 190; i += 1) {
-    worldState.snowDots.push({
-      x: randomInt(WORLD_WIDTH),
-      y: randomInt(WORLD_HEIGHT),
-      r: Math.random() > 0.8 ? 2 : 1
-    });
-  }
-}
-
-function initializeMiyuSquareWorld() {
-  buildSnowDots();
-  const playerParts = clonePartState(state);
-  const playerSprite = createMiuSpriteCanvas(playerParts);
-  const worldInfo = getWorldById("miu-square");
-  worldState.mode = "square";
-  worldState.partyStars = 0;
-  worldState.dailyGiftClaimed = false;
-  worldState.collectibles = createSquareCollectibles(WORLD_START_COLLECTIBLE_COUNT);
-  worldState.nextCollectibleRespawnAt = performance.now() + WORLD_COLLECTIBLE_RESPAWN_MS;
-  worldState.emote.text = "";
-  worldState.emote.until = 0;
-  worldState.cafe = createCafeSceneState();
-  worldState.club = createClubSceneState();
-
-  worldState.player = {
-    name: state.miuName || "Miu",
-    x: 430,
-    y: 350,
-    parts: playerParts,
-    sprite: playerSprite
-  };
-  worldState.npcs = buildWorldNpcs();
-  worldState.interactables = buildWorldInteractables();
-  worldState.keys.up = false;
-  worldState.keys.down = false;
-  worldState.keys.left = false;
-  worldState.keys.right = false;
-  worldState.mouse.active = false;
-  worldState.mouse.x = worldState.player.x;
-  worldState.mouse.y = worldState.player.y;
-  worldState.mouse.screenX = worldCanvas.width / 2;
-  worldState.mouse.screenY = worldCanvas.height / 2;
-  worldState.camera.x = clamp(worldState.player.x - worldCanvas.width / 2, 0, WORLD_WIDTH - worldCanvas.width);
-  worldState.camera.y = clamp(worldState.player.y - worldCanvas.height / 2, 0, WORLD_HEIGHT - worldCanvas.height);
-  worldState.currentZoneName = getCurrentZoneName(worldState.player.x, worldState.player.y);
-
-  worldTitleText.textContent = worldInfo.name;
-  worldStatusText.textContent = `${worldState.player.name} olarak giriş yaptın • ${worldInfo.crowd} çevrimiçi • Bölge: ${worldState.currentZoneName}`;
-  worldHelpText.textContent = "Mouse'a basılı tutup joystick gibi sür veya WASD kullan. E ile etkileşime geç, F ile emote yap.";
-  refreshEventCycle(false);
-  updateWorldStatus();
-  setWorldChat("Miyu Meydanı yenilendi: daha kompakt alan, daha fazla bölge ve saatlik etkinlikler seni bekliyor.", 3800);
-}
-
-function setWorldChat(text, durationMs = 2200) {
-  worldState.chatText = text;
-  worldState.chatUntil = performance.now() + durationMs;
-  worldChatText.textContent = text;
-}
-
-function intersectsRect(a, b) {
-  return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
-}
-
-function getHitboxAt(x, y) {
-  return {
-    x: x - 9,
-    y: y - 7,
-    w: 18,
-    h: 12
-  };
-}
-
-function isWorldBlocked(hitbox) {
-  const activeSize = getActiveWorldSize();
-  if (hitbox.x < 10 || hitbox.y < 10 || hitbox.x + hitbox.w > activeSize.width - 10 || hitbox.y + hitbox.h > activeSize.height - 10) {
-    return true;
-  }
-
-  return getActiveWorldBlocks().some((block) => intersectsRect(hitbox, block));
-}
-
-function getInteractableDistance(interactable, x, y) {
-  const centerX = interactable.x + interactable.w / 2;
-  const centerY = interactable.y + interactable.h / 2;
-  return Math.hypot(centerX - x, centerY - y);
-}
-
-function getNearbyInteractable() {
-  if (!worldState.player || worldState.mode !== "square") {
-    return null;
-  }
-
-  const { x, y } = worldState.player;
-  let nearest = null;
-  let minDistance = 9999;
-
-  worldState.interactables.forEach((interactable) => {
-    const distance = getInteractableDistance(interactable, x, y);
-    if (distance < 44 && distance < minDistance) {
-      nearest = interactable;
-      minDistance = distance;
-    }
-  });
-
-  return nearest;
-}
-
-function getNearbyNpc() {
-  if (!worldState.player || worldState.mode !== "square") {
-    return null;
-  }
-
-  const { x, y } = worldState.player;
-  let nearestNpc = null;
-  let minDistance = 9999;
-
-  worldState.npcs.forEach((npc) => {
-    const distance = Math.hypot(npc.x - x, npc.y - y);
-    if (distance < 42 && distance < minDistance) {
-      nearestNpc = npc;
-      minDistance = distance;
-    }
-  });
-
-  return nearestNpc;
-}
-
-function interactWithNpc(npc) {
-  const eventLine = getNpcEventLine();
-  const linePool = eventLine ? [...npc.lines, eventLine] : [...npc.lines];
-  setWorldChat(`${npc.name}: ${pickRandom(linePool)}`, 2600);
-  npc.nextTalkAt = performance.now() + 4200;
-}
-
-function interactWithObject(interactable) {
-  if (interactable.id === "cafe") {
-    enterCafeScene();
-    return;
-  }
-  if (interactable.id === "stage-club") {
-    enterClubScene();
-    return;
-  }
-  if (interactable.id === "daily-gift") {
-    if (worldState.dailyGiftClaimed) {
-      setWorldChat("Bugünkü sürpriz kutunu zaten açtın. Yarın yine kontrol et.", 1800);
-      return;
+  function createWorldRuntime({
+    PARTS,
+    state,
+    worldState,
+    worldCanvas,
+    worldCtx,
+    worldTitleText,
+    worldStatusText,
+    worldHelpText,
+    worldChatText,
+    getWorldById,
+    clonePartState,
+    createMiuSpriteCanvas
+  }) {
+    function paint(targetCtx, x, y, width, height, color) {
+      targetCtx.fillStyle = color;
+      targetCtx.fillRect(x, y, width, height);
     }
 
-    const reward = 4 + randomInt(5);
-    worldState.dailyGiftClaimed = true;
-    worldState.partyStars += reward;
-    triggerPlayerEmote("HEDIYE!");
-    setWorldChat(`Sürpriz kutudan ${reward} Miyu Yıldızı kazandın. Toplam: ${worldState.partyStars}`, 2200);
-    return;
-  }
+    function ensureInventoryState() {
+      if (!state.inventory || typeof state.inventory !== "object") {
+        state.inventory = {};
+      }
+      if (!Array.isArray(state.inventory.ownedFashionItemIds)) {
+        state.inventory.ownedFashionItemIds = [];
+      }
+      if (typeof state.inventory.equippedOutfitId !== "string") {
+        state.inventory.equippedOutfitId = "";
+      }
+      if (typeof state.inventory.equippedAccessoryId !== "string") {
+        state.inventory.equippedAccessoryId = "";
+      }
+      if (typeof state.inventory.equippedShoeId !== "string") {
+        state.inventory.equippedShoeId = "";
+      }
 
-  setWorldChat(interactable.message, 3000);
-}
-
-function interactInWorld() {
-  if (worldState.mode === "cafe") {
-    if (worldState.cafe.seatedSeatId) {
-      standFromCafeSeat();
-      setWorldChat("Ayağa kalktın.", 1200);
-      return;
+      state.inventory.ownedFashionItemIds = Array.from(
+        new Set(
+          state.inventory.ownedFashionItemIds.map((itemId) => LEGACY_FASHION_ID_MAP[itemId] || itemId)
+        )
+      );
+      state.inventory.equippedOutfitId = LEGACY_FASHION_ID_MAP[state.inventory.equippedOutfitId] || state.inventory.equippedOutfitId;
     }
 
-    const seat = getNearbyCafeSeat();
-    if (seat) {
-      sitOnCafeSeat(seat);
-      return;
+    function getCurrentZone(x, y) {
+      return WORLD_ZONES.find((zone) => x >= zone.x && x <= zone.x + zone.w && y >= zone.y && y <= zone.y + zone.h) || null;
     }
 
-    const counterDistance = getDistanceToZone(worldState.cafe.counterZone, worldState.player.x, worldState.player.y);
-    if (counterDistance < 74) {
-      startCafeMiniGame();
-      return;
+    function getCurrentZoneName(x, y) {
+      const zone = getCurrentZone(x, y);
+      return zone ? zone.name : "Meydan Çevresi";
     }
 
-    const exitDistance = getDistanceToZone(worldState.cafe.exitZone, worldState.player.x, worldState.player.y);
-    if (exitDistance < 56) {
-      exitCafeScene();
-      return;
+    function getEventTitle() {
+      const hour = new Date().getHours();
+      const event = WORLD_EVENT_LIBRARY[hour % WORLD_EVENT_LIBRARY.length];
+      return event ? event.title : "Hazırlanıyor";
     }
 
-    setWorldChat("Kafede etkileşim için masalara, kasaya veya çıkış kapısına yaklaş.", 1500);
-    return;
-  }
-
-  if (worldState.mode === "club") {
-    const game = worldState.club.game;
-    if (game.active) {
-      setWorldChat("Dans oyunu aktif. Sırayı W A S D ile tamamla veya Q ile çık.", 1400);
-      return;
+    function getActiveWorldSize() {
+      if (worldState.mode === "cafe") {
+        return { width: CAFE_WIDTH, height: CAFE_HEIGHT };
+      }
+      if (worldState.mode === "club") {
+        return { width: CLUB_WIDTH, height: CLUB_HEIGHT };
+      }
+      if (worldState.mode === "hall") {
+        return { width: HALL_WIDTH, height: HALL_HEIGHT };
+      }
+      return { width: WORLD_WIDTH, height: WORLD_HEIGHT };
     }
 
-    if (worldState.club.seatedSeatId) {
-      standFromClubSeat();
-      setWorldChat("Ayağa kalktın.", 1200);
-      return;
+    function intersectsRect(a, b) {
+      return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
     }
 
-    const seat = getNearbyClubSeat();
-    if (seat) {
-      sitOnClubSeat(seat);
-      return;
+    function getHitboxAt(x, y) {
+      return { x: x - 9, y: y - 7, w: 18, h: 12 };
     }
 
-    if (isPointInsideZone(worldState.club.danceZone, worldState.player.x, worldState.player.y)) {
-      startClubDanceGame();
-      return;
+    function getActiveWorldBlocks() {
+      if (worldState.mode === "cafe") {
+        return worldState.cafe.counterBlocks || [];
+      }
+      if (worldState.mode === "club") {
+        return worldState.club.blocks || [];
+      }
+      if (worldState.mode === "hall") {
+        return worldState.hall.blocks || [];
+      }
+      return WORLD_BLOCKS;
     }
 
-    const danceDistance = getDistanceToZone(worldState.club.danceZone, worldState.player.x, worldState.player.y);
-    if (danceDistance < 96) {
-      setWorldChat("Dans pisti için biraz daha ortaya ilerle ve E bas.", 1300);
-      return;
+    function isWorldBlocked(hitbox) {
+      const activeSize = getActiveWorldSize();
+      if (hitbox.x < 10 || hitbox.y < 10 || hitbox.x + hitbox.w > activeSize.width - 10 || hitbox.y + hitbox.h > activeSize.height - 10) {
+        return true;
+      }
+      return getActiveWorldBlocks().some((block) => intersectsRect(hitbox, block));
     }
 
-    const exitDistance = getDistanceToZone(worldState.club.exitZone, worldState.player.x, worldState.player.y);
-    if (exitDistance < 56) {
-      exitClubScene();
-      return;
+    function getRandomSquareSpawnPoint() {
+      for (let i = 0; i < 100; i += 1) {
+        const x = 24 + randomInt(WORLD_WIDTH - 48);
+        const y = 24 + randomInt(WORLD_HEIGHT - 48);
+        if (!isWorldBlocked(getHitboxAt(x, y))) {
+          return { x, y };
+        }
+      }
+      return { x: 430, y: 350 };
     }
 
-    setWorldChat("Kulüpte etkileşim için koltuklara, dans pistine veya çıkış kapısına yaklaş.", 1500);
-    return;
-  }
+    function createSquareCollectibles(count) {
+      const list = [];
+      for (let i = 0; i < count; i += 1) {
+        const point = getRandomSquareSpawnPoint();
+        list.push({ id: `star-${i}-${randomInt(9999)}`, x: point.x, y: point.y, phase: Math.random() * Math.PI * 2 });
+      }
+      return list;
+    }
 
-  const interactable = getNearbyInteractable();
-  if (interactable) {
-    interactWithObject(interactable);
-    return;
-  }
+    function spawnSquareCollectible() {
+      if (worldState.collectibles.length >= WORLD_MAX_COLLECTIBLE_COUNT) {
+        return;
+      }
+      const point = getRandomSquareSpawnPoint();
+      worldState.collectibles.push({ id: `star-${Date.now()}-${randomInt(9999)}`, x: point.x, y: point.y, phase: Math.random() * Math.PI * 2 });
+    }
 
-  const npc = getNearbyNpc();
-  if (npc) {
-    interactWithNpc(npc);
-    return;
-  }
+    function updateSquareCollectibles(now) {
+      if (worldState.mode !== "square" || !worldState.player) {
+        return;
+      }
+      let collected = 0;
+      worldState.collectibles = worldState.collectibles.filter((item) => {
+        if (Math.hypot(item.x - worldState.player.x, item.y - worldState.player.y) > 16) {
+          return true;
+        }
+        collected += 1;
+        return false;
+      });
+      if (collected > 0) {
+        worldState.partyStars += collected;
+        triggerPlayerEmote("YILDIZ!");
+        setWorldChat(`${collected} yıldız topladın. Toplam: ${worldState.partyStars}`, 1300);
+      }
+      if (now >= worldState.nextCollectibleRespawnAt) {
+        spawnSquareCollectible();
+        worldState.nextCollectibleRespawnAt = now + WORLD_COLLECTIBLE_RESPAWN_MS;
+      }
+    }
 
-  setWorldChat("Yakında etkileşime girecek bir şey yok.", 1500);
-}
+    function setWorldChat(text, durationMs = 2200) {
+      worldState.chatText = text;
+      worldState.chatUntil = performance.now() + durationMs;
+      worldChatText.textContent = text;
+    }
 
-function getCanvasLocalPoint(event) {
-  const rect = worldCanvas.getBoundingClientRect();
-  const scaleX = worldCanvas.width / rect.width;
-  const scaleY = worldCanvas.height / rect.height;
-  return {
-    x: (event.clientX - rect.left) * scaleX,
-    y: (event.clientY - rect.top) * scaleY
-  };
-}
+    function buildNpcParts(index) {
+      const parts = clonePartState(state);
+      Object.keys(PARTS).forEach((partKey) => {
+        parts[partKey].style = (index + randomInt(PARTS[partKey].styles.length)) % PARTS[partKey].styles.length;
+        parts[partKey].color = (index + randomInt(PARTS[partKey].colors.length)) % PARTS[partKey].colors.length;
+      });
+      return parts;
+    }
 
-function getCanvasPoint(event) {
-  const local = getCanvasLocalPoint(event);
-  return {
-    x: local.x + worldState.camera.x,
-    y: local.y + worldState.camera.y
-  };
-}
+    function buildWorldNpcs() {
+      const spawn = [
+        { x: 218, y: 266 }, { x: 352, y: 286 }, { x: 502, y: 278 },
+        { x: 646, y: 268 }, { x: 266, y: 470 }, { x: 486, y: 484 }, { x: 620, y: 470 }
+      ];
+      return WORLD_NPC_DEFS.map((npcDef, index) => {
+        const parts = buildNpcParts(index + 1);
+        return {
+          name: npcDef.name,
+          lines: npcDef.lines || ["Selam!"],
+          x: spawn[index].x,
+          y: spawn[index].y,
+          parts,
+          sprite: createMiuSpriteCanvas(parts),
+          vx: (Math.random() * 2 - 1) * WORLD_NPC_SPEED,
+          vy: (Math.random() * 2 - 1) * WORLD_NPC_SPEED,
+          turnAt: 0,
+          nextTalkAt: 0
+        };
+      });
+    }
 
-function setWorldMousePosition(event) {
-  const local = getCanvasLocalPoint(event);
-  const point = getCanvasPoint(event);
-  const activeSize = getActiveWorldSize();
-  worldState.mouse.screenX = local.x;
-  worldState.mouse.screenY = local.y;
-  worldState.mouse.x = clamp(point.x, 0, activeSize.width);
-  worldState.mouse.y = clamp(point.y, 0, activeSize.height);
-}
+    const HALL_NPC_DEFS = [
+      {
+        name: "Ayla",
+        lines: [
+          "Sahne programını yakında buradan duyuracağız.",
+          "Görev sistemi açıldığında önce benimle konuşabilirsin."
+        ],
+        x: 204,
+        y: 170
+      },
+      {
+        name: "Bora",
+        lines: [
+          "Soldaki NPC masası görev başlangıç noktası olacak.",
+          "Sahnede etkinlik varken koltuklar hızla doluyor."
+        ],
+        x: 204,
+        y: 286
+      },
+      {
+        name: "Dora",
+        lines: [
+          "Sağ tarafta günlük görev zinciri için hazırlık yapıyoruz.",
+          "Meydana dönmeden önce buradaki NPC'leri kontrol et."
+        ],
+        x: 496,
+        y: 170
+      },
+      {
+        name: "Mert",
+        lines: [
+          "Yakında görev tamamlayınca yıldız kazanabileceksin.",
+          "Sahne önü oturma düzeni etkinlik saatinde değişebilir."
+        ],
+        x: 496,
+        y: 286
+      }
+    ];
 
-function handleWorldMouseDown(event) {
-  if (!worldState.running || !worldState.player) {
-    return;
-  }
+    function buildTownHallNpcs() {
+      return HALL_NPC_DEFS.map((npcDef, index) => {
+        const parts = buildNpcParts(index + 11);
+        return {
+          name: npcDef.name,
+          lines: npcDef.lines,
+          x: npcDef.x,
+          y: npcDef.y,
+          fixed: true,
+          parts,
+          sprite: createMiuSpriteCanvas(parts),
+          nextTalkAt: 0
+        };
+      });
+    }
 
-  if (worldState.mode === "club" && worldState.club.game.active) {
-    event.preventDefault();
-    worldState.mouse.active = false;
-    return;
-  }
+    function buildWorldInteractables() {
+      return [
+        { id: "cafe", label: "Kafe", x: 156, y: 177, w: 32, h: 18, message: "Kafe: Sıcak kakao ve sohbet masaları hazır." },
+        { id: "fashion-shop", label: "Moda Dükkanı", x: 150, y: 457, w: 32, h: 18, message: "Moda mağazasına hoş geldin." },
+        { id: "town-hall", label: "Meydan Holü", x: 390, y: 470, w: 60, h: 20, message: "Meydan Holü girişindesin." },
+        { id: "stage-club", label: "Sahne Kulübü", x: 680, y: 466, w: 36, h: 18, message: "Kulüp girişine geldin." },
+        { id: "daily-gift", label: "Sürpriz Kutu", x: 538, y: 306, w: 22, h: 16, message: "Günlük ödül kutusu." },
+        { id: "notice-board", label: "Duyuru Panosu", x: 500, y: 235, w: 24, h: 16, message: "Duyuru panosu güncellendi." }
+      ];
+    }
 
-  if (worldState.mode === "cafe" && worldState.cafe.game.active) {
-    const localPoint = getCanvasLocalPoint(event);
-    const choiceIndex = getCafeGameChoiceFromPoint(localPoint.x, localPoint.y);
-    if (choiceIndex !== null) {
+    function initializeMiyuSquareWorld() {
+      ensureInventoryState();
+      const worldInfo = getWorldById("miu-square");
+      const playerParts = clonePartState(state);
+      worldState.mode = "square";
+      worldState.partyStars = 0;
+      worldState.dailyGiftClaimed = false;
+      worldState.collectibles = createSquareCollectibles(WORLD_START_COLLECTIBLE_COUNT);
+      worldState.nextCollectibleRespawnAt = performance.now() + WORLD_COLLECTIBLE_RESPAWN_MS;
+      worldState.cafe = createCafeSceneState();
+      worldState.club = createClubSceneState();
+      worldState.hall = createTownHallSceneState();
+      worldState.hall.npcs = buildTownHallNpcs();
+      worldState.fashionShop = createFashionShopState();
+      worldState.player = { name: state.miuName || "Miu", x: 430, y: 350, parts: playerParts, sprite: createMiuSpriteCanvas(playerParts) };
+      worldState.npcs = buildWorldNpcs();
+      worldState.interactables = buildWorldInteractables();
+      worldState.mouse.active = false;
+      worldState.mouse.x = worldState.player.x;
+      worldState.mouse.y = worldState.player.y;
+      worldState.mouse.screenX = worldCanvas.width / 2;
+      worldState.mouse.screenY = worldCanvas.height / 2;
+      worldState.camera.x = clamp(worldState.player.x - worldCanvas.width / 2, 0, WORLD_WIDTH - worldCanvas.width);
+      worldState.camera.y = clamp(worldState.player.y - worldCanvas.height / 2, 0, WORLD_HEIGHT - worldCanvas.height);
+      worldState.currentZoneName = getCurrentZoneName(worldState.player.x, worldState.player.y);
+      worldTitleText.textContent = worldInfo.name;
+      worldHelpText.textContent = "Mouse'u basılı tutup sür veya WASD kullan. E ile etkileşime geç.";
+      updateWorldStatus();
+      setWorldChat("Miyu Meydanı hazır. Moda dükkanında yeni ürünler var.", 2800);
+    }
+
+    function ensureWorldAudio() { return null; }
+    function stopWorldAudio() {}
+
+    function triggerPlayerEmote(text = "") {
+      if (!worldState.player) { return; }
+      worldState.emote.text = text || pickRandom(["SELAM!", "HARİKA!", "MIU!"]);
+      worldState.emote.until = performance.now() + 900;
+    }
+
+    const FASHION_CATEGORY_LIST = [
+      { id: "outfit", label: "Şapka" },
+      { id: "accessory", label: "Aksesuar" },
+      { id: "shoe", label: "Ayakkabı" }
+    ];
+
+    const LEGACY_FASHION_ID_MAP = {
+      "outfit-sakura-jacket": "hat-sakura-beret",
+      "outfit-neon-hoodie": "hat-neon-cap",
+      "outfit-cloud-poncho": "hat-cloud-beanie",
+      "outfit-sunset-cardigan": "hat-sunset-fedora"
+    };
+
+    function isFashionShopOpen() { return worldState.mode === "square" && worldState.fashionShop.open; }
+    function isFashionShopKey(key) { return FASHION_SHOP_KEYS.has(key); }
+
+    function ensureFashionShopState() {
+      if (!worldState.fashionShop || typeof worldState.fashionShop !== "object") {
+        worldState.fashionShop = createFashionShopState();
+      }
+      if (typeof worldState.fashionShop.selectedCategory !== "string") {
+        worldState.fashionShop.selectedCategory = "outfit";
+      }
+      if (typeof worldState.fashionShop.selectedItemId !== "string") {
+        worldState.fashionShop.selectedItemId = "";
+      }
+      if (typeof worldState.fashionShop.hoverIndex !== "number") {
+        worldState.fashionShop.hoverIndex = -1;
+      }
+      if (!worldState.fashionShop.confirm || typeof worldState.fashionShop.confirm !== "object") {
+        worldState.fashionShop.confirm = { open: false, itemId: "", price: 0 };
+      }
+    }
+
+    function getEquippedFashionItemId(type) {
+      ensureInventoryState();
+      if (type === "outfit") {
+        return state.inventory.equippedOutfitId;
+      }
+      if (type === "accessory") {
+        return state.inventory.equippedAccessoryId;
+      }
+      return state.inventory.equippedShoeId;
+    }
+
+    function setEquippedFashionItemId(type, itemId) {
+      ensureInventoryState();
+      if (type === "outfit") {
+        state.inventory.equippedOutfitId = itemId;
+      } else if (type === "accessory") {
+        state.inventory.equippedAccessoryId = itemId;
+      } else {
+        state.inventory.equippedShoeId = itemId;
+      }
+    }
+
+    function getEquippedFashionLabel(type) {
+      const id = getEquippedFashionItemId(type);
+      const item = FASHION_SHOP_ITEMS.find((entry) => entry.id === id);
+      return item ? item.label : "-";
+    }
+
+    function getFashionTypeLabel(type) {
+      if (type === "outfit") {
+        return "Şapka";
+      }
+      if (type === "accessory") {
+        return "Aksesuar";
+      }
+      return "Ayakkabı";
+    }
+
+    function getFashionCategoryItems(categoryId) {
+      return FASHION_SHOP_ITEMS.filter((item) => item.type === categoryId);
+    }
+
+    function ensureFashionShopSelection() {
+      ensureFashionShopState();
+      const categoryValid = FASHION_CATEGORY_LIST.some((entry) => entry.id === worldState.fashionShop.selectedCategory);
+      if (!categoryValid) {
+        worldState.fashionShop.selectedCategory = "outfit";
+      }
+      const items = getFashionCategoryItems(worldState.fashionShop.selectedCategory);
+      if (items.length === 0) {
+        worldState.fashionShop.selectedItemId = "";
+        worldState.fashionShop.hoverIndex = -1;
+        return;
+      }
+      const selectedIndex = items.findIndex((entry) => entry.id === worldState.fashionShop.selectedItemId);
+      if (selectedIndex === -1) {
+        worldState.fashionShop.selectedItemId = items[0].id;
+        worldState.fashionShop.hoverIndex = 0;
+        return;
+      }
+      if (worldState.fashionShop.hoverIndex >= items.length) {
+        worldState.fashionShop.hoverIndex = selectedIndex;
+      }
+    }
+
+    function getSelectedFashionItem() {
+      ensureFashionShopSelection();
+      const items = getFashionCategoryItems(worldState.fashionShop.selectedCategory);
+      if (items.length === 0) {
+        return null;
+      }
+      const selected = items.find((entry) => entry.id === worldState.fashionShop.selectedItemId);
+      return selected || items[0];
+    }
+
+    function getFashionPreviewLook() {
+      const look = {
+        outfitId: getEquippedFashionItemId("outfit"),
+        accessoryId: getEquippedFashionItemId("accessory"),
+        shoeId: getEquippedFashionItemId("shoe")
+      };
+      const selectedItem = getSelectedFashionItem();
+      if (!selectedItem) {
+        return look;
+      }
+      if (selectedItem.type === "outfit") {
+        look.outfitId = selectedItem.id;
+      } else if (selectedItem.type === "accessory") {
+        look.accessoryId = selectedItem.id;
+      } else if (selectedItem.type === "shoe") {
+        look.shoeId = selectedItem.id;
+      }
+      return look;
+    }
+
+    function getFashionShopPanelRect() {
+      const width = 460;
+      const height = 252;
+      return {
+        x: Math.max(8, Math.floor((worldCanvas.width - width) / 2)),
+        y: Math.max(8, Math.floor((worldCanvas.height - height) / 2)),
+        width,
+        height
+      };
+    }
+
+    function getFashionShopLayout() {
+      const panel = getFashionShopPanelRect();
+      const previewRect = {
+        x: panel.x + 12,
+        y: panel.y + 46,
+        w: 146,
+        h: 194
+      };
+      const rightX = panel.x + 170;
+      const rightW = panel.width - 182;
+      const tabs = FASHION_CATEGORY_LIST.map((category, index) => ({
+        id: category.id,
+        label: category.label,
+        x: rightX + index * 92,
+        y: panel.y + 46,
+        w: 88,
+        h: 24
+      }));
+      const itemsArea = {
+        x: rightX,
+        y: panel.y + 78,
+        w: rightW,
+        h: 114
+      };
+      const actionRect = {
+        x: rightX,
+        y: panel.y + 198,
+        w: rightW,
+        h: 24
+      };
+      const detailRect = {
+        x: rightX,
+        y: panel.y + 226,
+        w: rightW,
+        h: 16
+      };
+      return { panel, previewRect, tabs, itemsArea, actionRect, detailRect };
+    }
+
+    function getFashionItemRects(categoryItems, layout) {
+      const cardGap = 8;
+      const columnCount = 2;
+      const cardWidth = Math.floor((layout.itemsArea.w - cardGap) / columnCount);
+      const cardHeight = 52;
+      return categoryItems.map((item, index) => {
+        const row = Math.floor(index / columnCount);
+        const col = index % columnCount;
+        return {
+          item,
+          index,
+          x: layout.itemsArea.x + col * (cardWidth + cardGap),
+          y: layout.itemsArea.y + row * (cardHeight + cardGap),
+          w: cardWidth,
+          h: cardHeight
+        };
+      });
+    }
+
+    function getFashionConfirmLayout(layout) {
+      const dialog = {
+        x: layout.panel.x + 106,
+        y: layout.panel.y + 88,
+        w: 248,
+        h: 98
+      };
+      const yesRect = { x: dialog.x + 18, y: dialog.y + 62, w: 98, h: 24 };
+      const noRect = { x: dialog.x + 132, y: dialog.y + 62, w: 98, h: 24 };
+      return { dialog, yesRect, noRect };
+    }
+
+    function isPointInRect(screenX, screenY, rect) {
+      return (
+        screenX >= rect.x &&
+        screenX <= rect.x + rect.w &&
+        screenY >= rect.y &&
+        screenY <= rect.y + rect.h
+      );
+    }
+
+    function getFashionRarityColor(rarity) {
+      if (rarity === "Destansı") {
+        return "#4c2d87";
+      }
+      if (rarity === "Nadir") {
+        return "#1f5d9f";
+      }
+      return "#4a5f2d";
+    }
+
+    function isFashionItemOwned(itemId) {
+      return state.inventory.ownedFashionItemIds.includes(itemId);
+    }
+
+    function equipFashionItem(item) {
+      setEquippedFashionItemId(item.type, item.id);
+    }
+
+    function openPurchaseConfirmation(item) {
+      ensureFashionShopState();
+      worldState.fashionShop.confirm.open = true;
+      worldState.fashionShop.confirm.itemId = item.id;
+      worldState.fashionShop.confirm.price = item.price;
+    }
+
+    function closePurchaseConfirmation() {
+      ensureFashionShopState();
+      worldState.fashionShop.confirm.open = false;
+      worldState.fashionShop.confirm.itemId = "";
+      worldState.fashionShop.confirm.price = 0;
+    }
+
+    function confirmFashionPurchase(accepted) {
+      ensureFashionShopState();
+      if (!worldState.fashionShop.confirm.open) {
+        return;
+      }
+
+      const item = FASHION_SHOP_ITEMS.find((entry) => entry.id === worldState.fashionShop.confirm.itemId);
+      if (!item) {
+        closePurchaseConfirmation();
+        return;
+      }
+
+      if (!accepted) {
+        closePurchaseConfirmation();
+        setWorldChat("Satın alma iptal edildi.", 1200);
+        return;
+      }
+
+      if (worldState.partyStars < item.price) {
+        closePurchaseConfirmation();
+        setWorldChat(`${item.label} için ${item.price} yıldız gerekiyor.`, 1400);
+        return;
+      }
+
+      worldState.partyStars -= item.price;
+      if (!isFashionItemOwned(item.id)) {
+        state.inventory.ownedFashionItemIds.push(item.id);
+      }
+      equipFashionItem(item);
+      closePurchaseConfirmation();
+      setWorldChat(`${item.label} satın alındı. Kalan yıldız: ${worldState.partyStars}`, 1800);
+    }
+
+    function activateSelectedFashionItem() {
+      const selectedItem = getSelectedFashionItem();
+      if (!selectedItem) {
+        return;
+      }
+
+      if (isFashionItemOwned(selectedItem.id)) {
+        if (getEquippedFashionItemId(selectedItem.type) === selectedItem.id) {
+          setWorldChat(`${selectedItem.label} zaten kuşanıldı.`, 1100);
+          return;
+        }
+        equipFashionItem(selectedItem);
+        setWorldChat(`${selectedItem.label} kuşanıldı.`, 1200);
+        return;
+      }
+
+      if (worldState.partyStars < selectedItem.price) {
+        setWorldChat(`${selectedItem.label} için ${selectedItem.price} yıldız gerekiyor.`, 1400);
+        return;
+      }
+
+      openPurchaseConfirmation(selectedItem);
+    }
+
+    function setFashionCategory(categoryId) {
+      if (!FASHION_CATEGORY_LIST.some((entry) => entry.id === categoryId)) {
+        return;
+      }
+      worldState.fashionShop.selectedCategory = categoryId;
+      const items = getFashionCategoryItems(categoryId);
+      worldState.fashionShop.selectedItemId = items.length > 0 ? items[0].id : "";
+      worldState.fashionShop.hoverIndex = items.length > 0 ? 0 : -1;
+    }
+
+    function cycleFashionCategory(direction) {
+      ensureFashionShopSelection();
+      const currentIndex = FASHION_CATEGORY_LIST.findIndex((entry) => entry.id === worldState.fashionShop.selectedCategory);
+      const nextIndex = (currentIndex + direction + FASHION_CATEGORY_LIST.length) % FASHION_CATEGORY_LIST.length;
+      setFashionCategory(FASHION_CATEGORY_LIST[nextIndex].id);
+    }
+
+    function openFashionShop() {
+      ensureInventoryState();
+      ensureFashionShopState();
+      ensureFashionShopSelection();
+      worldState.fashionShop.open = true;
+      worldState.mouse.active = false;
+      setWorldChat("Moda mağazası açıldı. Kategori seçip ürüne tıkla.", 1800);
+    }
+
+    function closeFashionShop(showMessage = true) {
+      ensureFashionShopState();
+      worldState.fashionShop.open = false;
+      worldState.fashionShop.hoverIndex = -1;
+      closePurchaseConfirmation();
+      worldState.mouse.active = false;
+      if (showMessage) { setWorldChat("Moda mağazasından çıktın.", 1200); }
+    }
+
+    function resolveFashionShopSelection(index) {
+      ensureFashionShopSelection();
+      const items = getFashionCategoryItems(worldState.fashionShop.selectedCategory);
+      const item = items[index];
+      if (!item) {
+        return;
+      }
+      worldState.fashionShop.hoverIndex = index;
+      worldState.fashionShop.selectedItemId = item.id;
+    }
+
+    function handleFashionShopKey(key) {
+      if (!isFashionShopOpen()) { return; }
+      ensureFashionShopSelection();
+
+      if (worldState.fashionShop.confirm.open) {
+        if (key === "y" || key === "enter" || key === "e") {
+          confirmFashionPurchase(true);
+        } else if (key === "n" || key === "escape" || key === "q") {
+          confirmFashionPurchase(false);
+        }
+        return;
+      }
+
+      if (key === "q" || key === "escape") {
+        closeFashionShop();
+        return;
+      }
+      if (key === "arrowleft") {
+        cycleFashionCategory(-1);
+        return;
+      }
+      if (key === "arrowright") {
+        cycleFashionCategory(1);
+        return;
+      }
+      if (key === "enter" || key === "e") {
+        activateSelectedFashionItem();
+        return;
+      }
+
+      const index = Number(key) - 1;
+      if (!Number.isNaN(index)) {
+        const items = getFashionCategoryItems(worldState.fashionShop.selectedCategory);
+        if (index >= 0 && index < items.length) {
+          resolveFashionShopSelection(index);
+        }
+      }
+    }
+
+    function drawFashionPreviewCharacter(targetCtx, previewRect, previewLook) {
+      paint(targetCtx, previewRect.x, previewRect.y, previewRect.w, previewRect.h, "#f7f1e4");
+      targetCtx.strokeStyle = "rgba(60, 46, 35, 0.45)";
+      targetCtx.strokeRect(previewRect.x + 0.5, previewRect.y + 0.5, previewRect.w - 1, previewRect.h - 1);
+      paint(targetCtx, previewRect.x + 8, previewRect.y + 10, previewRect.w - 16, previewRect.h - 60, "#e8f4eb");
+      targetCtx.textAlign = "left";
+      targetCtx.textBaseline = "alphabetic";
+      targetCtx.fillStyle = "#2d2723";
+      targetCtx.font = '700 10px "Trebuchet MS", "Segoe UI", sans-serif';
+      targetCtx.fillText("Karakter Önizleme", previewRect.x + 8, previewRect.y + 10);
+
+      const sprite = worldState.player && worldState.player.sprite
+        ? worldState.player.sprite
+        : createMiuSpriteCanvas(clonePartState(state));
+      const scale = 4;
+      const baseSpriteSize = 32;
+      const drawSize = baseSpriteSize * scale;
+      const drawX = previewRect.x + Math.floor((previewRect.w - drawSize) / 2);
+      const drawY = previewRect.y + 16;
+
+      targetCtx.imageSmoothingEnabled = false;
+      targetCtx.drawImage(sprite, drawX, drawY, drawSize, drawSize);
+      drawFashionOverlayShapes(targetCtx, drawX, drawY, drawSize / baseSpriteSize, previewLook);
+
+      const selectedItem = getSelectedFashionItem();
+      targetCtx.textAlign = "left";
+      targetCtx.textBaseline = "middle";
+      targetCtx.fillStyle = "#2d2723";
+      targetCtx.font = '10px "Trebuchet MS", "Segoe UI", sans-serif';
+      targetCtx.fillText(`Seçili: ${selectedItem ? selectedItem.label : "-"}`, previewRect.x + 8, previewRect.y + previewRect.h - 42);
+      targetCtx.fillText(`Şapka: ${getEquippedFashionLabel("outfit")}`, previewRect.x + 8, previewRect.y + previewRect.h - 30);
+      targetCtx.fillText(`Aksesuar: ${getEquippedFashionLabel("accessory")}`, previewRect.x + 8, previewRect.y + previewRect.h - 18);
+      targetCtx.fillText(`Ayakkabı: ${getEquippedFashionLabel("shoe")}`, previewRect.x + 8, previewRect.y + previewRect.h - 6);
+    }
+
+    function drawFashionCategoryTabs(targetCtx, layout) {
+      layout.tabs.forEach((tab) => {
+        const active = tab.id === worldState.fashionShop.selectedCategory;
+        paint(targetCtx, tab.x, tab.y, tab.w, tab.h, active ? "#d0ece3" : "#efe6d2");
+        targetCtx.strokeStyle = active ? "#1f6f53" : "rgba(64, 52, 43, 0.55)";
+        targetCtx.strokeRect(tab.x + 0.5, tab.y + 0.5, tab.w - 1, tab.h - 1);
+        targetCtx.fillStyle = "#2d2723";
+        targetCtx.font = '700 10px "Trebuchet MS", "Segoe UI", sans-serif';
+        targetCtx.textAlign = "center";
+        targetCtx.textBaseline = "middle";
+        targetCtx.fillText(tab.label, tab.x + tab.w / 2, tab.y + tab.h / 2 + 0.5);
+      });
+    }
+
+    function drawFashionItemList(targetCtx, layout, categoryItems) {
+      const selectedItem = getSelectedFashionItem();
+      const rects = getFashionItemRects(categoryItems, layout);
+      rects.forEach((card) => {
+        const owned = isFashionItemOwned(card.item.id);
+        const equipped = getEquippedFashionItemId(card.item.type) === card.item.id;
+        const selected = selectedItem && selectedItem.id === card.item.id;
+        const hovered = worldState.fashionShop.hoverIndex === card.index;
+
+        paint(targetCtx, card.x, card.y, card.w, card.h, owned ? "#d8f0e0" : "#e7edf8");
+        targetCtx.strokeStyle = equipped ? "#1f6f53" : selected ? "#7e6118" : hovered ? "#4f6a84" : "rgba(70, 60, 53, 0.6)";
+        targetCtx.strokeRect(card.x + 0.5, card.y + 0.5, card.w - 1, card.h - 1);
+
+        targetCtx.textAlign = "left";
+        targetCtx.textBaseline = "alphabetic";
+        targetCtx.fillStyle = "#2d2723";
+        targetCtx.font = '700 10px "Trebuchet MS", "Segoe UI", sans-serif';
+        targetCtx.fillText(`[${card.index + 1}] ${card.item.label}`, card.x + 6, card.y + 13);
+        targetCtx.font = '10px "Trebuchet MS", "Segoe UI", sans-serif';
+        targetCtx.fillStyle = getFashionRarityColor(card.item.rarity);
+        targetCtx.fillText(card.item.rarity, card.x + 6, card.y + 27);
+        targetCtx.fillStyle = "#2d2723";
+        targetCtx.fillText(`${card.item.price} yıldız`, card.x + 6, card.y + 40);
+        targetCtx.textAlign = "right";
+        targetCtx.fillText(owned ? (equipped ? "Kuşanıldı" : "Sahip") : "Satın Al", card.x + card.w - 6, card.y + 40);
+        targetCtx.textAlign = "left";
+      });
+    }
+
+    function getFashionActionState(selectedItem) {
+      if (!selectedItem) {
+        return { label: "Ürün seç", enabled: false, tone: "#d1cbc0" };
+      }
+      const owned = isFashionItemOwned(selectedItem.id);
+      const equipped = getEquippedFashionItemId(selectedItem.type) === selectedItem.id;
+      if (owned && equipped) {
+        return { label: "Kuşanıldı", enabled: false, tone: "#cce8d6" };
+      }
+      if (owned) {
+        return { label: "Kuşan", enabled: true, tone: "#cce8d6" };
+      }
+      return { label: `Satın Al (${selectedItem.price} Yıldız)`, enabled: true, tone: "#f3ddb9" };
+    }
+
+    function drawFashionPrimaryAction(targetCtx, layout, selectedItem) {
+      const actionState = getFashionActionState(selectedItem);
+      const actionRect = layout.actionRect;
+      paint(targetCtx, actionRect.x, actionRect.y, actionRect.w, actionRect.h, actionState.tone);
+      targetCtx.strokeStyle = actionState.enabled ? "#2f3d32" : "rgba(70, 60, 53, 0.55)";
+      targetCtx.strokeRect(actionRect.x + 0.5, actionRect.y + 0.5, actionRect.w - 1, actionRect.h - 1);
+      targetCtx.textAlign = "center";
+      targetCtx.textBaseline = "middle";
+      targetCtx.fillStyle = "#2d2723";
+      targetCtx.font = '700 11px "Trebuchet MS", "Segoe UI", sans-serif';
+      targetCtx.fillText(actionState.label, actionRect.x + actionRect.w / 2, actionRect.y + actionRect.h / 2 + 0.5);
+    }
+
+    function drawFashionConfirmDialog(targetCtx, layout) {
+      if (!worldState.fashionShop.confirm.open) {
+        return;
+      }
+      const selectedItem = FASHION_SHOP_ITEMS.find((entry) => entry.id === worldState.fashionShop.confirm.itemId);
+      if (!selectedItem) {
+        return;
+      }
+
+      const confirmLayout = getFashionConfirmLayout(layout);
+      paint(targetCtx, layout.panel.x, layout.panel.y, layout.panel.width, layout.panel.height, "rgba(18,22,28,0.45)");
+      paint(targetCtx, confirmLayout.dialog.x, confirmLayout.dialog.y, confirmLayout.dialog.w, confirmLayout.dialog.h, "#fff4e5");
+      targetCtx.strokeStyle = "#2c2926";
+      targetCtx.strokeRect(confirmLayout.dialog.x + 0.5, confirmLayout.dialog.y + 0.5, confirmLayout.dialog.w - 1, confirmLayout.dialog.h - 1);
+      targetCtx.textAlign = "center";
+      targetCtx.textBaseline = "middle";
+      targetCtx.fillStyle = "#2d2723";
+      targetCtx.font = '700 12px "Trebuchet MS", "Segoe UI", sans-serif';
+      targetCtx.fillText("Satın Alma Onayı", confirmLayout.dialog.x + confirmLayout.dialog.w / 2, confirmLayout.dialog.y + 20);
+      targetCtx.font = '11px "Trebuchet MS", "Segoe UI", sans-serif';
+      targetCtx.fillText(`${selectedItem.label} ${selectedItem.price} Yıldız'a satın alınacak.`, confirmLayout.dialog.x + confirmLayout.dialog.w / 2, confirmLayout.dialog.y + 42);
+      targetCtx.fillText("Emin misin?", confirmLayout.dialog.x + confirmLayout.dialog.w / 2, confirmLayout.dialog.y + 56);
+
+      paint(targetCtx, confirmLayout.yesRect.x, confirmLayout.yesRect.y, confirmLayout.yesRect.w, confirmLayout.yesRect.h, "#cfe8da");
+      paint(targetCtx, confirmLayout.noRect.x, confirmLayout.noRect.y, confirmLayout.noRect.w, confirmLayout.noRect.h, "#f0d8d8");
+      targetCtx.strokeStyle = "#2c2926";
+      targetCtx.strokeRect(confirmLayout.yesRect.x + 0.5, confirmLayout.yesRect.y + 0.5, confirmLayout.yesRect.w - 1, confirmLayout.yesRect.h - 1);
+      targetCtx.strokeRect(confirmLayout.noRect.x + 0.5, confirmLayout.noRect.y + 0.5, confirmLayout.noRect.w - 1, confirmLayout.noRect.h - 1);
+      targetCtx.font = '700 11px "Trebuchet MS", "Segoe UI", sans-serif';
+      targetCtx.fillStyle = "#2d2723";
+      targetCtx.fillText("Evet", confirmLayout.yesRect.x + confirmLayout.yesRect.w / 2, confirmLayout.yesRect.y + confirmLayout.yesRect.h / 2 + 0.5);
+      targetCtx.fillText("Hayır", confirmLayout.noRect.x + confirmLayout.noRect.w / 2, confirmLayout.noRect.y + confirmLayout.noRect.h / 2 + 0.5);
+    }
+
+    function drawFashionShopOverlay(targetCtx) {
+      if (!isFashionShopOpen()) { return; }
+      ensureFashionShopSelection();
+      const selectedItem = getSelectedFashionItem();
+      const layout = getFashionShopLayout();
+      const panel = layout.panel;
+
+      paint(targetCtx, 0, 0, worldCanvas.width, worldCanvas.height, "rgba(12,17,21,0.78)");
+      paint(targetCtx, panel.x, panel.y, panel.width, panel.height, "rgba(248,240,226,0.97)");
+      targetCtx.strokeStyle = "#2b2a28";
+      targetCtx.strokeRect(panel.x + 1, panel.y + 1, panel.width - 2, panel.height - 2);
+
+      targetCtx.fillStyle = "#2a1d18";
+      targetCtx.font = 'bold 13px "Trebuchet MS", "Segoe UI", sans-serif';
+      targetCtx.textAlign = "left";
+      targetCtx.textBaseline = "alphabetic";
+      targetCtx.fillText("MODA MAĞAZASI", panel.x + 12, panel.y + 18);
+      targetCtx.font = '11px "Trebuchet MS", "Segoe UI", sans-serif';
+      targetCtx.fillText("Kategori seç, ürüne bas ve ardından Satın Al/Kuşan.", panel.x + 12, panel.y + 34);
+      targetCtx.textAlign = "right";
+      targetCtx.fillText(`Yıldız: ${worldState.partyStars}`, panel.x + panel.width - 12, panel.y + 18);
+      targetCtx.fillText("Q/Esc: Kapat  •  ←/→: Kategori  •  1-9: Ürün  •  Enter/E: Onay", panel.x + panel.width - 12, panel.y + 34);
+
+      drawFashionPreviewCharacter(targetCtx, layout.previewRect, getFashionPreviewLook());
+      drawFashionCategoryTabs(targetCtx, layout);
+
+      const categoryItems = getFashionCategoryItems(worldState.fashionShop.selectedCategory);
+      drawFashionItemList(targetCtx, layout, categoryItems);
+      drawFashionPrimaryAction(targetCtx, layout, selectedItem);
+
+      paint(targetCtx, layout.detailRect.x, layout.detailRect.y, layout.detailRect.w, layout.detailRect.h, "rgba(255,255,255,0.72)");
+      targetCtx.textAlign = "left";
+      targetCtx.textBaseline = "middle";
+      targetCtx.fillStyle = "#2d2723";
+      targetCtx.font = '10px "Trebuchet MS", "Segoe UI", sans-serif';
+      if (selectedItem) {
+        targetCtx.fillStyle = getFashionRarityColor(selectedItem.rarity);
+        targetCtx.fillText(`${getFashionTypeLabel(selectedItem.type)} • ${selectedItem.rarity}`, layout.detailRect.x + 6, layout.detailRect.y + 8);
+        targetCtx.fillStyle = "#2d2723";
+        targetCtx.fillText(` - ${selectedItem.description}`, layout.detailRect.x + 88, layout.detailRect.y + 8);
+      } else {
+        targetCtx.fillText("Bu kategoride ürün bulunamadı.", layout.detailRect.x + 6, layout.detailRect.y + 8);
+      }
+
+      drawFashionConfirmDialog(targetCtx, layout);
+    }
+
+    function getFashionShopTabIdFromPoint(screenX, screenY) {
+      const layout = getFashionShopLayout();
+      const tab = layout.tabs.find((entry) => isPointInRect(screenX, screenY, entry));
+      return tab ? tab.id : "";
+    }
+
+    function getFashionShopItemIndexFromPoint(screenX, screenY) {
+      const layout = getFashionShopLayout();
+      const categoryItems = getFashionCategoryItems(worldState.fashionShop.selectedCategory);
+      const cards = getFashionItemRects(categoryItems, layout);
+      const card = cards.find((entry) => isPointInRect(screenX, screenY, entry));
+      return card ? card.index : null;
+    }
+
+    function isPointInsideFashionPrimaryAction(screenX, screenY) {
+      const layout = getFashionShopLayout();
+      return isPointInRect(screenX, screenY, layout.actionRect);
+    }
+
+    function getFashionConfirmChoiceFromPoint(screenX, screenY) {
+      if (!worldState.fashionShop.confirm.open) {
+        return "";
+      }
+      const layout = getFashionShopLayout();
+      const confirmLayout = getFashionConfirmLayout(layout);
+      if (isPointInRect(screenX, screenY, confirmLayout.yesRect)) {
+        return "yes";
+      }
+      if (isPointInRect(screenX, screenY, confirmLayout.noRect)) {
+        return "no";
+      }
+      return "";
+    }
+
+    function isPointInsideFashionPanel(screenX, screenY) {
+      const panel = getFashionShopPanelRect();
+      return isPointInRect(screenX, screenY, { x: panel.x, y: panel.y, w: panel.width, h: panel.height });
+    }
+
+    function enterTownHall() {
+      if (!worldState.player) {
+        return;
+      }
+      if (!Array.isArray(worldState.hall.npcs) || worldState.hall.npcs.length === 0) {
+        worldState.hall.npcs = buildTownHallNpcs();
+      }
+      worldState.hall.previousWorldPosition = { x: worldState.player.x, y: worldState.player.y };
+      worldState.mode = "hall";
+      worldState.player.x = worldState.hall.entryPoint.x;
+      worldState.player.y = worldState.hall.entryPoint.y;
+      worldTitleText.textContent = "Meydan Holü";
+      worldState.mouse.active = false;
+      updateWorldCamera();
+      setWorldChat("Meydan Holü'ne giriş yaptın.", 1500);
+    }
+
+    function exitTownHall() {
+      if (!worldState.player) {
+        return;
+      }
+      const fallback = { x: 420, y: 500 };
+      const previous = worldState.hall.previousWorldPosition || fallback;
+      worldState.mode = "square";
+      worldState.player.x = previous.x;
+      worldState.player.y = previous.y;
+      worldTitleText.textContent = getWorldById("miu-square").name;
+      worldState.mouse.active = false;
+      updateWorldCamera();
+      setWorldChat("Meydana geri döndün.", 1300);
+    }
+
+    function getActiveInteractables() {
+      if (worldState.mode === "hall") {
+        return worldState.hall.interactables || [];
+      }
+      return worldState.interactables;
+    }
+
+    function getNearbyTownHallNpc() {
+      if (worldState.mode !== "hall" || !worldState.player || !Array.isArray(worldState.hall.npcs)) {
+        return null;
+      }
+      let nearest = null;
+      let minDistance = 9999;
+      worldState.hall.npcs.forEach((npc) => {
+        const distance = Math.hypot(npc.x - worldState.player.x, npc.y - worldState.player.y);
+        if (distance < 44 && distance < minDistance) {
+          nearest = npc;
+          minDistance = distance;
+        }
+      });
+      return nearest;
+    }
+
+    function getNearbyInteractable() {
+      if (!worldState.player) { return null; }
+      const interactables = getActiveInteractables();
+      let nearest = null; let minDistance = 9999;
+      interactables.forEach((item) => {
+        const cx = item.x + item.w / 2; const cy = item.y + item.h / 2;
+        const distance = Math.hypot(cx - worldState.player.x, cy - worldState.player.y);
+        if (distance < 46 && distance < minDistance) { nearest = item; minDistance = distance; }
+      });
+      return nearest;
+    }
+
+    function interactInWorld() {
+      if (isFashionShopOpen()) { closeFashionShop(); return; }
+
+      if (worldState.mode === "hall") {
+        const nearbyHallNpc = getNearbyTownHallNpc();
+        if (nearbyHallNpc) {
+          const now = performance.now();
+          if (now < nearbyHallNpc.nextTalkAt) {
+            setWorldChat(`${nearbyHallNpc.name}: Birazdan tekrar konuşalım.`, 1200);
+          } else {
+            nearbyHallNpc.nextTalkAt = now + 1400;
+            setWorldChat(`${nearbyHallNpc.name}: ${pickRandom(nearbyHallNpc.lines)}`, 1900);
+          }
+          return;
+        }
+
+        const hallInteractable = getNearbyInteractable();
+        if (!hallInteractable) {
+          setWorldChat("Yakında etkileşime girecek bir şey yok.", 1200);
+          return;
+        }
+        if (hallInteractable.id === "hall-exit") {
+          exitTownHall();
+          return;
+        }
+        setWorldChat(hallInteractable.message, 1800);
+        return;
+      }
+
+      const interactable = getNearbyInteractable();
+      if (!interactable) { setWorldChat("Yakında etkileşime girecek bir şey yok.", 1200); return; }
+      if (interactable.id === "fashion-shop") { openFashionShop(); return; }
+      if (interactable.id === "town-hall") { enterTownHall(); return; }
+      if (interactable.id === "daily-gift") {
+        if (worldState.dailyGiftClaimed) { setWorldChat("Günlük ödülünü aldın.", 1200); return; }
+        worldState.dailyGiftClaimed = true;
+        const reward = 4 + randomInt(5);
+        worldState.partyStars += reward;
+        setWorldChat(`Günlük kutudan ${reward} yıldız kazandın.`, 1600);
+        return;
+      }
+      setWorldChat(interactable.message, 1800);
+    }
+
+    function handleWorldMouseDown(event) {
+      if (!worldState.running || !worldState.player) { return; }
       event.preventDefault();
+      if (isFashionShopOpen()) {
+        ensureFashionShopSelection();
+        worldState.mouse.active = false;
+        const rect = worldCanvas.getBoundingClientRect();
+        const scaleX = worldCanvas.width / rect.width;
+        const scaleY = worldCanvas.height / rect.height;
+        const screenX = (event.clientX - rect.left) * scaleX;
+        const screenY = (event.clientY - rect.top) * scaleY;
+
+        if (worldState.fashionShop.confirm.open) {
+          const confirmChoice = getFashionConfirmChoiceFromPoint(screenX, screenY);
+          if (confirmChoice === "yes") {
+            confirmFashionPurchase(true);
+            return;
+          }
+          if (confirmChoice === "no") {
+            confirmFashionPurchase(false);
+            return;
+          }
+          return;
+        }
+
+        const tabId = getFashionShopTabIdFromPoint(screenX, screenY);
+        if (tabId) {
+          setFashionCategory(tabId);
+          return;
+        }
+
+        const index = getFashionShopItemIndexFromPoint(screenX, screenY);
+        if (index !== null) {
+          resolveFashionShopSelection(index);
+          return;
+        }
+
+        if (isPointInsideFashionPrimaryAction(screenX, screenY) && !worldState.fashionShop.confirm.open) {
+          activateSelectedFashionItem();
+          return;
+        }
+
+        if (!isPointInsideFashionPanel(screenX, screenY)) {
+          closeFashionShop();
+        }
+        return;
+      }
       ensureWorldAudio();
-      worldState.mouse.active = false;
-      resolveCafeGameChoice(choiceIndex);
-      return;
+      const rect = worldCanvas.getBoundingClientRect();
+      const scaleX = worldCanvas.width / rect.width;
+      const scaleY = worldCanvas.height / rect.height;
+      worldState.mouse.screenX = (event.clientX - rect.left) * scaleX;
+      worldState.mouse.screenY = (event.clientY - rect.top) * scaleY;
+      worldState.mouse.active = true;
     }
 
-    if (isPointInsideCafeGamePanel(localPoint.x, localPoint.y)) {
-      event.preventDefault();
-      worldState.mouse.active = false;
-      return;
-    }
-  }
-
-  event.preventDefault();
-  ensureWorldAudio();
-  setWorldMousePosition(event);
-  worldState.mouse.active = true;
-}
-
-function handleWorldMouseMove(event) {
-  if (!worldState.running || !worldState.player || !worldState.mouse.active) {
-    return;
-  }
-
-  setWorldMousePosition(event);
-}
-
-function handleWorldMouseUp() {
-  worldState.mouse.active = false;
-}
-
-function setMovementKey(key, value) {
-  if (key === "arrowup" || key === "w") {
-    worldState.keys.up = value;
-  } else if (key === "arrowdown" || key === "s") {
-    worldState.keys.down = value;
-  } else if (key === "arrowleft" || key === "a") {
-    worldState.keys.left = value;
-  } else if (key === "arrowright" || key === "d") {
-    worldState.keys.right = value;
-  }
-}
-
-function getMouseDriveVector() {
-  if (!worldState.mouse.active || !worldState.player) {
-    return { x: 0, y: 0, magnitude: 0 };
-  }
-
-  const playerScreenX = worldState.player.x - worldState.camera.x;
-  const playerScreenY = worldState.player.y - worldState.camera.y;
-  const deltaX = worldState.mouse.screenX - playerScreenX;
-  const deltaY = worldState.mouse.screenY - playerScreenY;
-  const distance = Math.hypot(deltaX, deltaY);
-  if (distance <= WORLD_JOYSTICK_DEADZONE) {
-    return { x: 0, y: 0, magnitude: 0 };
-  }
-
-  const analogStrength = Math.min(1, (distance - WORLD_JOYSTICK_DEADZONE) / (WORLD_JOYSTICK_MAX_DISTANCE - WORLD_JOYSTICK_DEADZONE));
-  return {
-    x: (deltaX / distance) * analogStrength,
-    y: (deltaY / distance) * analogStrength,
-    magnitude: analogStrength
-  };
-}
-
-function updateNpcMovement(npc, dt, now) {
-  if (npc.turnAt <= now) {
-    const direction = pickNpcDirection();
-    npc.vx = direction.vx;
-    npc.vy = direction.vy;
-    npc.turnAt = now + 1300 + randomInt(2200);
-  }
-
-  const nextX = npc.x + npc.vx * dt;
-  const nextY = npc.y + npc.vy * dt;
-
-  const xHitbox = getHitboxAt(nextX, npc.y);
-  if (!isWorldBlocked(xHitbox)) {
-    npc.x = nextX;
-  } else {
-    npc.vx *= -1;
-  }
-
-  const yHitbox = getHitboxAt(npc.x, nextY);
-  if (!isWorldBlocked(yHitbox)) {
-    npc.y = nextY;
-  } else {
-    npc.vy *= -1;
-  }
-}
-
-function updateNpcs(dt, now) {
-  if (worldState.mode !== "square") {
-    return;
-  }
-
-  worldState.npcs.forEach((npc) => {
-    updateNpcMovement(npc, dt, now);
-    if (!worldState.player) {
-      return;
-    }
-
-    const distance = Math.hypot(npc.x - worldState.player.x, npc.y - worldState.player.y);
-    if (distance < 40 && npc.nextTalkAt <= now) {
-      const eventLine = getNpcEventLine();
-      const linePool = eventLine ? [...npc.lines, eventLine] : [...npc.lines];
-      setWorldChat(`${npc.name}: ${pickRandom(linePool)}`, 2400);
-      npc.nextTalkAt = now + 5200 + randomInt(2600);
-    }
-  });
-}
-
-function updateWorldCamera() {
-  if (!worldState.player) {
-    return;
-  }
-
-  const activeSize = getActiveWorldSize();
-  const targetX = clamp(worldState.player.x - worldCanvas.width / 2, 0, activeSize.width - worldCanvas.width);
-  const targetY = clamp(worldState.player.y - worldCanvas.height / 2, 0, activeSize.height - worldCanvas.height);
-
-  worldState.camera.x += (targetX - worldState.camera.x) * 0.16;
-  worldState.camera.y += (targetY - worldState.camera.y) * 0.16;
-}
-
-function updateWorldStatus() {
-  if (!worldState.player) {
-    return;
-  }
-
-  if (worldState.mode === "cafe") {
-    worldState.currentZoneName = "Miyu Kafe İç Mekanı";
-    const ambience = getCurrentAmbienceProfile();
-    const game = worldState.cafe.game;
-    let orderLabel = "-";
-    if (game.currentOrder) {
-      const stepInfo = getCafeCurrentOrderStepInfo(game.currentOrder);
-      orderLabel = `${game.currentOrder.customer}: ${stepInfo.recipe.label} (${stepInfo.stepIndex + 1}/${stepInfo.recipe.steps.length})`;
-    }
-    worldStatusText.textContent = `${worldState.player.name} • Bölge: Miyu Kafe İç Mekanı • Ambiyans: ${ambience.label} • Yıldız: ${worldState.partyStars} • Skor: ${game.score} • Tamamlanan: ${game.served} • Kaçan: ${game.misses} • Sipariş: ${orderLabel}`;
-    return;
-  }
-
-  if (worldState.mode === "club") {
-    worldState.currentZoneName = "Sahne Kulübü İç Mekanı";
-    const ambience = getCurrentAmbienceProfile();
-    const game = worldState.club.game;
-    const nextKey = getClubDanceCurrentKey();
-    const nextKeyLabel = nextKey ? getClubDanceKeyLabel(nextKey) : "-";
-    const secondsLeft = game.active ? Math.ceil(getClubDanceMsLeft() / 1000) : 0;
-    const timeLabel = game.active ? `${secondsLeft}s` : "-";
-    worldStatusText.textContent = `${worldState.player.name} • Bölge: Sahne Kulübü • Ambiyans: ${ambience.label} • Yıldız: ${worldState.partyStars} • Skor: ${game.score} • Tur: ${game.rounds} • Seri: x${game.streak} • Kaçan: ${game.misses} • Sıradaki Tuş: ${nextKeyLabel} • Süre: ${timeLabel}`;
-    return;
-  }
-
-  const zoneInfo = getCurrentZone(worldState.player.x, worldState.player.y);
-  const zoneName = zoneInfo ? zoneInfo.name : "Meydan Çevresi";
-  worldState.currentZoneName = zoneName;
-
-  const nearbyCount = worldState.npcs.reduce((count, npc) => {
-    return Math.hypot(npc.x - worldState.player.x, npc.y - worldState.player.y) < 150 ? count + 1 : count;
-  }, 0);
-
-  const worldInfo = getWorldById("miu-square");
-  const ambience = getCurrentAmbienceProfile();
-  const eventTitle = worldState.eventCycle.currentEvent ? worldState.eventCycle.currentEvent.title : "Hazırlanıyor";
-  worldStatusText.textContent = `${worldState.player.name} • Bölge: ${zoneName} • Etkinlik: ${eventTitle} • Ambiyans: ${ambience.label} • Yıldız: ${worldState.partyStars} • Yakınında ${nearbyCount} miu • ${worldInfo.crowd} çevrimiçi`;
-}
-
-function updatePlayerMovement(dt) {
-  if (!worldState.player) {
-    return;
-  }
-
-  if (worldState.mode === "cafe" && worldState.cafe.seatedSeatId) {
-    return;
-  }
-  if (worldState.mode === "club" && (worldState.club.seatedSeatId || worldState.club.game.active)) {
-    return;
-  }
-
-  let keyX = 0;
-  let keyY = 0;
-  if (worldState.keys.left) {
-    keyX -= 1;
-  }
-  if (worldState.keys.right) {
-    keyX += 1;
-  }
-  if (worldState.keys.up) {
-    keyY -= 1;
-  }
-  if (worldState.keys.down) {
-    keyY += 1;
-  }
-
-  if (keyX !== 0 || keyY !== 0) {
-    const keyLength = Math.hypot(keyX, keyY);
-    keyX /= keyLength;
-    keyY /= keyLength;
-  }
-
-  const mouseVector = getMouseDriveVector();
-  const inputX = keyX + mouseVector.x;
-  const inputY = keyY + mouseVector.y;
-  const inputLength = Math.hypot(inputX, inputY);
-  if (inputLength === 0) {
-    return;
-  }
-
-  const normalizedX = inputX / inputLength;
-  const normalizedY = inputY / inputLength;
-  const speedFactor = Math.min(1, inputLength);
-  const moveDistance = WORLD_PLAYER_SPEED * dt * speedFactor;
-  const stepX = normalizedX * moveDistance;
-  const stepY = normalizedY * moveDistance;
-  let moved = false;
-
-  const nextX = worldState.player.x + stepX;
-  const xHitbox = getHitboxAt(nextX, worldState.player.y);
-  if (!isWorldBlocked(xHitbox)) {
-    worldState.player.x = nextX;
-    moved = true;
-  }
-
-  const nextY = worldState.player.y + stepY;
-  const yHitbox = getHitboxAt(worldState.player.x, nextY);
-  if (!isWorldBlocked(yHitbox)) {
-    worldState.player.y = nextY;
-    moved = true;
-  }
-
-  if (!moved) {
-    return;
-  }
-}
-
-function updateWorldHint() {
-  if (worldState.mode === "cafe") {
-    const game = worldState.cafe.game;
-    if (game.active && game.currentOrder) {
-      const secondsLeft = Math.max(0, Math.ceil((game.orderEndAt - performance.now()) / 1000));
-      const stepInfo = getCafeCurrentOrderStepInfo(game.currentOrder);
-      const options = stepInfo.step.options.map((option, index) => `[${index + 1}] ${option}`).join(" • ");
-      worldHelpText.textContent = `Sipariş fişi alt-ortada: ${game.currentOrder.customer} ${stepInfo.recipe.label}. ${stepInfo.stepIndex + 1}/${stepInfo.recipe.steps.length} ${stepInfo.step.prompt}. ${options} • ${secondsLeft}s • Çıkış: Q`;
-      return;
-    }
-
-    if (worldState.cafe.seatedSeatId) {
-      worldHelpText.textContent = "Kafede oturuyorsun. E ile ayağa kalkabilirsin.";
-      return;
-    }
-
-    const seat = getNearbyCafeSeat();
-    if (seat) {
-      worldHelpText.textContent = "Bu sandalyeye oturmak için E bas.";
-      return;
-    }
-
-    const counterDistance = getDistanceToZone(worldState.cafe.counterZone, worldState.player.x, worldState.player.y);
-    if (counterDistance < 78) {
-      worldHelpText.textContent = "Kasa oyunu için E bas. Sipariş fişi alt-ortada açılır; 1-2-3 veya tıklama ile seçim yap.";
-      return;
-    }
-
-    const exitDistance = getDistanceToZone(worldState.cafe.exitZone, worldState.player.x, worldState.player.y);
-    if (exitDistance < 60) {
-      worldHelpText.textContent = "Meydana dönmek için E bas.";
-      return;
-    }
-
-    worldHelpText.textContent = "Kafede WASD veya mouse joystick ile dolaş. E ile otur/oyun/çıkış, F ile emote.";
-    return;
-  }
-
-  if (worldState.mode === "club") {
-    const game = worldState.club.game;
-    if (game.active && game.sequence.length) {
-      const secondsLeft = Math.ceil(getClubDanceMsLeft() / 1000);
-      const sequenceText = game.sequence.map((key, index) => {
-        if (index < game.inputIndex) {
-          return `[${key.toUpperCase()}]`;
+    function handleWorldMouseMove(event) {
+      if (!worldState.running || !worldState.player) { return; }
+      const rect = worldCanvas.getBoundingClientRect();
+      const scaleX = worldCanvas.width / rect.width;
+      const scaleY = worldCanvas.height / rect.height;
+      const screenX = (event.clientX - rect.left) * scaleX;
+      const screenY = (event.clientY - rect.top) * scaleY;
+      if (isFashionShopOpen()) {
+        if (worldState.fashionShop.confirm.open) {
+          worldState.fashionShop.hoverIndex = -1;
+          return;
         }
-        if (index === game.inputIndex) {
-          return `<${key.toUpperCase()}>`;
+        const hoverIndex = getFashionShopItemIndexFromPoint(screenX, screenY);
+        worldState.fashionShop.hoverIndex = hoverIndex === null ? -1 : hoverIndex;
+        return;
+      }
+      if (!worldState.mouse.active) { return; }
+      worldState.mouse.screenX = screenX;
+      worldState.mouse.screenY = screenY;
+    }
+
+    function handleWorldMouseUp() { worldState.mouse.active = false; }
+
+    function setMovementKey(key, value) {
+      if (key === "arrowup" || key === "w") { worldState.keys.up = value; }
+      else if (key === "arrowdown" || key === "s") { worldState.keys.down = value; }
+      else if (key === "arrowleft" || key === "a") { worldState.keys.left = value; }
+      else if (key === "arrowright" || key === "d") { worldState.keys.right = value; }
+    }
+
+    function getMouseDriveVector() {
+      if (!worldState.mouse.active || !worldState.player) { return { x: 0, y: 0, magnitude: 0 }; }
+      const px = worldState.player.x - worldState.camera.x;
+      const py = worldState.player.y - worldState.camera.y;
+      const dx = worldState.mouse.screenX - px;
+      const dy = worldState.mouse.screenY - py;
+      const distance = Math.hypot(dx, dy);
+      if (distance <= WORLD_JOYSTICK_DEADZONE) { return { x: 0, y: 0, magnitude: 0 }; }
+      const analog = Math.min(1, (distance - WORLD_JOYSTICK_DEADZONE) / (WORLD_JOYSTICK_MAX_DISTANCE - WORLD_JOYSTICK_DEADZONE));
+      return { x: (dx / distance) * analog, y: (dy / distance) * analog, magnitude: analog };
+    }
+
+    function updatePlayerMovement(dt) {
+      if (!worldState.player || isFashionShopOpen()) { return; }
+      let keyX = (worldState.keys.right ? 1 : 0) - (worldState.keys.left ? 1 : 0);
+      let keyY = (worldState.keys.down ? 1 : 0) - (worldState.keys.up ? 1 : 0);
+      if (keyX !== 0 || keyY !== 0) {
+        const length = Math.hypot(keyX, keyY);
+        keyX /= length; keyY /= length;
+      }
+      const mouse = getMouseDriveVector();
+      const ix = keyX + mouse.x;
+      const iy = keyY + mouse.y;
+      const inputLen = Math.hypot(ix, iy);
+      if (inputLen === 0) { return; }
+      const nx = ix / inputLen;
+      const ny = iy / inputLen;
+      const move = WORLD_PLAYER_SPEED * dt * Math.min(1, inputLen);
+      const nextX = worldState.player.x + nx * move;
+      const nextY = worldState.player.y + ny * move;
+      if (!isWorldBlocked(getHitboxAt(nextX, worldState.player.y))) { worldState.player.x = nextX; }
+      if (!isWorldBlocked(getHitboxAt(worldState.player.x, nextY))) { worldState.player.y = nextY; }
+    }
+
+    function pickNpcVelocity(speed = WORLD_NPC_SPEED) {
+      const angle = Math.random() * Math.PI * 2;
+      return {
+        vx: Math.cos(angle) * speed,
+        vy: Math.sin(angle) * speed
+      };
+    }
+
+    function maybeTurnNpc(npc, now, speed = WORLD_NPC_SPEED) {
+      if (now < npc.turnAt) {
+        return;
+      }
+
+      const nextVelocity = pickNpcVelocity(speed);
+      npc.vx = nextVelocity.vx;
+      npc.vy = nextVelocity.vy;
+      npc.turnAt = now + 1000 + randomInt(2600);
+    }
+
+    function wouldNpcOverlapPlayer(nextX, nextY) {
+      if (!worldState.player) {
+        return false;
+      }
+      return Math.hypot(nextX - worldState.player.x, nextY - worldState.player.y) < 22;
+    }
+
+    function bounceNpc(npc, axis, now, speed = WORLD_NPC_SPEED) {
+      const nextVelocity = pickNpcVelocity(speed);
+      if (axis === "x") {
+        npc.vx = -npc.vx * 0.7 + nextVelocity.vx * 0.3;
+      } else {
+        npc.vy = -npc.vy * 0.7 + nextVelocity.vy * 0.3;
+      }
+      npc.turnAt = now + 500 + randomInt(1400);
+    }
+
+    function updateNpcMovement(dt, now) {
+      if (worldState.mode !== "square" || worldState.npcs.length === 0) {
+        return;
+      }
+
+      worldState.npcs.forEach((npc) => {
+        maybeTurnNpc(npc, now, WORLD_NPC_SPEED);
+
+        const nextX = npc.x + npc.vx * dt;
+        const nextY = npc.y + npc.vy * dt;
+
+        if (!isWorldBlocked(getHitboxAt(nextX, npc.y)) && !wouldNpcOverlapPlayer(nextX, npc.y)) {
+          npc.x = nextX;
+        } else {
+          bounceNpc(npc, "x", now, WORLD_NPC_SPEED);
         }
-        return key.toUpperCase();
-      }).join(" ");
-      const nextKey = getClubDanceCurrentKey();
-      worldHelpText.textContent = `Dans sırası: ${sequenceText} • Şimdi: ${nextKey ? getClubDanceKeyLabel(nextKey) : "-"} • Süre barı bitmeden tüm sırayı tamamla (${secondsLeft}s) • Çıkış: Q`;
-      return;
+
+        if (!isWorldBlocked(getHitboxAt(npc.x, nextY)) && !wouldNpcOverlapPlayer(npc.x, nextY)) {
+          npc.y = nextY;
+        } else {
+          bounceNpc(npc, "y", now, WORLD_NPC_SPEED);
+        }
+      });
     }
 
-    if (worldState.club.seatedSeatId) {
-      worldHelpText.textContent = "Kulüpte oturuyorsun. E ile ayağa kalkabilirsin.";
-      return;
+    function updateTownHallNpcMovement() {
+      if (worldState.mode !== "hall" || !Array.isArray(worldState.hall.npcs) || worldState.hall.npcs.length === 0) {
+        return;
+      }
     }
 
-    const seat = getNearbyClubSeat();
-    if (seat) {
-      worldHelpText.textContent = "Kenar koltuğuna oturmak için E bas.";
-      return;
+    function updateWorldCamera() {
+      if (!worldState.player) { return; }
+      const size = getActiveWorldSize();
+      const tx = clamp(worldState.player.x - worldCanvas.width / 2, 0, size.width - worldCanvas.width);
+      const ty = clamp(worldState.player.y - worldCanvas.height / 2, 0, size.height - worldCanvas.height);
+      worldState.camera.x += (tx - worldState.camera.x) * 0.16;
+      worldState.camera.y += (ty - worldState.camera.y) * 0.16;
     }
 
-    if (isPointInsideZone(worldState.club.danceZone, worldState.player.x, worldState.player.y)) {
-      worldHelpText.textContent = "Dans pisti aktif: ritim oyununu başlatmak için E bas.";
-      return;
+    function updateWorldStatus() {
+      if (!worldState.player) { return; }
+      const zoneName = worldState.mode === "hall" ? "Meydan Holü" : getCurrentZoneName(worldState.player.x, worldState.player.y);
+      worldState.currentZoneName = zoneName;
+      const worldInfo = getWorldById("miu-square");
+      const eventTitle = worldState.mode === "hall"
+        ? "Sahne Hazırlığı"
+        : getEventTitle();
+      const outfit = getEquippedFashionLabel("outfit");
+      const accessory = getEquippedFashionLabel("accessory");
+      const shoe = getEquippedFashionLabel("shoe");
+      worldStatusText.textContent = `${worldState.player.name} • Bölge: ${zoneName} • Etkinlik: ${eventTitle} • Yıldız: ${worldState.partyStars} • Stil: ${outfit} / ${accessory} / ${shoe} • ${worldInfo.crowd} çevrimiçi`;
     }
 
-    const exitDistance = getDistanceToZone(worldState.club.exitZone, worldState.player.x, worldState.player.y);
-    if (exitDistance < 58) {
-      worldHelpText.textContent = "Meydana dönmek için E bas.";
-      return;
+    function updateWorldHint() {
+      if (isFashionShopOpen()) {
+        worldHelpText.textContent = "Moda mağazası açık: kategori seç, ürüne tıkla, Satın Al/Kuşan ile onayla. Q/Esc ile kapat.";
+        return;
+      }
+      if (worldState.mode === "hall") {
+        worldHelpText.textContent = "Meydan Holü: WASD/mouse ile dolaş, E ile NPC'lerle konuş veya çıkış kapısını kullan.";
+        return;
+      }
+      worldHelpText.textContent = `${worldState.currentZoneName}: WASD/mouse ile gez, E ile etkileşime geç.`;
     }
 
-    worldHelpText.textContent = "Kulüpte WASD veya mouse ile dolaş. Piste girip E ile oyuna başla, F ile emote.";
-    return;
-  }
-
-  if (worldState.mouse.active) {
-    worldHelpText.textContent = "Joystick modu aktif: Mouse'u basılı tutup sürükleyerek yön ver.";
-    return;
-  }
-
-  const nearbyInteractable = getNearbyInteractable();
-  if (nearbyInteractable) {
-    worldHelpText.textContent = `${nearbyInteractable.label} yanında: E ile etkileşime geç`;
-    return;
-  }
-
-  const nearbyNpc = getNearbyNpc();
-  if (nearbyNpc) {
-    worldHelpText.textContent = `${nearbyNpc.name} yakınında: E ile konuş`;
-    return;
-  }
-
-  worldHelpText.textContent = `${worldState.currentZoneName}: Mouse joystick veya WASD ile gez, E ile etkileşime geç, F ile emote yap.`;
-}
-
-function drawWorldBuilding(targetCtx, config) {
-  paint(targetCtx, config.x, config.y, config.w, config.h, config.body);
-  paint(targetCtx, config.x + 6, config.y + 8, config.w - 12, config.h - 16, config.window);
-  paint(targetCtx, config.x, config.y, config.w, 10, config.roof);
-  paint(targetCtx, config.doorX, config.y + config.h - 16, 14, 16, "#705041");
-  paint(targetCtx, config.doorX + 10, config.y + config.h - 8, 2, 2, "#d9b39a");
-
-  targetCtx.fillStyle = "#1f2b25";
-  targetCtx.font = 'bold 11px "Nunito Sans", sans-serif';
-  targetCtx.textAlign = "center";
-  targetCtx.textBaseline = "middle";
-  targetCtx.fillText(config.label, config.x + config.w / 2, config.y + 12);
-}
-
-function drawMiyuSquareMap(targetCtx, now) {
-  paint(targetCtx, 0, 0, WORLD_WIDTH, WORLD_HEIGHT, "#d5ebff");
-  paint(targetCtx, 0, 142, WORLD_WIDTH, WORLD_HEIGHT - 142, "#d8f0da");
-
-  worldState.snowDots.forEach((dot, index) => {
-    const twinkle = 0.66 + Math.sin((now + index * 38) / 380) * 0.2;
-    targetCtx.fillStyle = `rgba(255,255,255,${twinkle})`;
-    targetCtx.fillRect(dot.x, dot.y, dot.r, dot.r);
-  });
-
-  paint(targetCtx, 0, 250, WORLD_WIDTH, 62, "#f6ead2");
-  paint(targetCtx, 401, 0, 58, WORLD_HEIGHT, "#f6ead2");
-  paint(targetCtx, 140, 236, 160, 32, "#f6ead2");
-  paint(targetCtx, 560, 236, 160, 32, "#f6ead2");
-  paint(targetCtx, 404, 406, 52, 120, "#f6ead2");
-
-  targetCtx.beginPath();
-  targetCtx.fillStyle = "#efe2c9";
-  targetCtx.arc(430, 280, 66, 0, Math.PI * 2);
-  targetCtx.fill();
-
-  drawWorldBuilding(targetCtx, {
-    x: 90,
-    y: 82,
-    w: 144,
-    h: 88,
-    roof: "#f1a56f",
-    body: "#f8d3b4",
-    window: "#fff2e4",
-    doorX: 154,
-    label: "Kafe"
-  });
-  drawWorldBuilding(targetCtx, {
-    x: 352,
-    y: 60,
-    w: 138,
-    h: 90,
-    roof: "#80aef0",
-    body: "#d4e6ff",
-    window: "#f4f9ff",
-    doorX: 414,
-    label: "Arcade"
-  });
-  drawWorldBuilding(targetCtx, {
-    x: 614,
-    y: 82,
-    w: 144,
-    h: 88,
-    roof: "#88d1bd",
-    body: "#d5f5ea",
-    window: "#f0fffa",
-    doorX: 678,
-    label: "Portal"
-  });
-  drawWorldBuilding(targetCtx, {
-    x: 102,
-    y: 356,
-    w: 140,
-    h: 90,
-    roof: "#f5bf74",
-    body: "#ffe0b9",
-    window: "#fff4df",
-    doorX: 158,
-    label: "Moda"
-  });
-  drawWorldBuilding(targetCtx, {
-    x: 352,
-    y: 390,
-    w: 136,
-    h: 88,
-    roof: "#92d8c1",
-    body: "#def8ef",
-    window: "#f3fffa",
-    doorX: 414,
-    label: "Pet Park"
-  });
-  drawWorldBuilding(targetCtx, {
-    x: 610,
-    y: 352,
-    w: 150,
-    h: 96,
-    roof: "#f29bb0",
-    body: "#ffd5e1",
-    window: "#ffeef3",
-    doorX: 676,
-    label: "Kulüp"
-  });
-
-  targetCtx.beginPath();
-  targetCtx.fillStyle = "#bcd5e9";
-  targetCtx.arc(430, 280, 31, 0, Math.PI * 2);
-  targetCtx.fill();
-  targetCtx.beginPath();
-  targetCtx.fillStyle = "#72b3df";
-  targetCtx.arc(430, 280, 22, 0, Math.PI * 2);
-  targetCtx.fill();
-  const pulse = 8 + Math.sin(now / 220) * 2;
-  targetCtx.beginPath();
-  targetCtx.fillStyle = "#a4dcff";
-  targetCtx.arc(430, 280, pulse, 0, Math.PI * 2);
-  targetCtx.fill();
-
-  for (let i = 0; i < 7; i += 1) {
-    const treeX = 56 + i * 110;
-    const treeY = i % 2 === 0 ? 216 : 338;
-    paint(targetCtx, treeX + 8, treeY + 18, 8, 14, "#7a5942");
-    targetCtx.beginPath();
-    targetCtx.fillStyle = "#7bc087";
-    targetCtx.arc(treeX + 12, treeY + 14, 16, 0, Math.PI * 2);
-    targetCtx.fill();
-  }
-
-  paint(targetCtx, 286, 330, 46, 8, "#b68d6a");
-  paint(targetCtx, 542, 330, 46, 8, "#b68d6a");
-  paint(targetCtx, 296, 338, 6, 10, "#8f694f");
-  paint(targetCtx, 310, 338, 6, 10, "#8f694f");
-  paint(targetCtx, 552, 338, 6, 10, "#8f694f");
-  paint(targetCtx, 566, 338, 6, 10, "#8f694f");
-
-  [220, 430, 640].forEach((lampX) => {
-    paint(targetCtx, lampX, 220, 4, 42, "#4d5965");
-    paint(targetCtx, lampX - 3, 214, 10, 8, "#fff2b0");
-    paint(targetCtx, lampX - 11, 224, 26, 14, "rgba(255, 247, 179, 0.2)");
-  });
-
-  worldState.interactables.forEach((interactable) => {
-    paint(targetCtx, interactable.x, interactable.y, interactable.w, interactable.h, "rgba(255, 255, 255, 0.32)");
-    paint(targetCtx, interactable.x + interactable.w / 2 - 4, interactable.y - 8, 8, 6, "#1f2b25");
-  });
-}
-
-function drawSquareCollectibles(targetCtx, now) {
-  worldState.collectibles.forEach((item, index) => {
-    const bob = Math.sin(now / 230 + item.phase + index * 0.3) * 1.8;
-    const sparkle = 0.45 + Math.sin(now / 170 + item.phase) * 0.3;
-    const x = Math.round(item.x);
-    const y = Math.round(item.y + bob);
-
-    paint(targetCtx, x - 1, y - 4, 2, 8, "#f8c95f");
-    paint(targetCtx, x - 4, y - 1, 8, 2, "#f8c95f");
-    paint(targetCtx, x - 2, y - 2, 4, 4, "#ffeeb8");
-    paint(targetCtx, x - 1, y - 1, 2, 2, "#fffdf0");
-
-    targetCtx.fillStyle = `rgba(255, 245, 190, ${sparkle})`;
-    targetCtx.fillRect(x - 6, y - 6, 1, 1);
-    targetCtx.fillRect(x + 5, y + 5, 1, 1);
-    targetCtx.fillRect(x + 5, y - 5, 1, 1);
-    targetCtx.fillRect(x - 6, y + 5, 1, 1);
-  });
-}
-
-function drawCafeInteriorMap(targetCtx, now) {
-  paint(targetCtx, 0, 0, CAFE_WIDTH, CAFE_HEIGHT, "#f2e6cf");
-  paint(targetCtx, 0, 0, CAFE_WIDTH, 54, "#f4d6a2");
-  paint(targetCtx, 0, CAFE_HEIGHT - 42, CAFE_WIDTH, 42, "#e1c7a3");
-
-  for (let x = 14; x < CAFE_WIDTH; x += 26) {
-    for (let y = 66; y < CAFE_HEIGHT - 48; y += 26) {
-      const shade = (x + y) % 52 === 0 ? "#f8f0e2" : "#efe2cd";
-      paint(targetCtx, x, y, 20, 20, shade);
-    }
-  }
-
-  paint(targetCtx, 438, 72, 170, 62, "#b98562");
-  paint(targetCtx, 446, 82, 154, 44, "#d8aa86");
-  paint(targetCtx, 524, 136, 84, 58, "#b98562");
-  paint(targetCtx, 534, 146, 64, 40, "#d8aa86");
-  paint(targetCtx, 548, 86, 18, 10, "#8fd0ef");
-  paint(targetCtx, 574, 86, 18, 10, "#f5b28b");
-
-  targetCtx.fillStyle = "#2d2118";
-  targetCtx.font = 'bold 13px "Nunito Sans", sans-serif';
-  targetCtx.textAlign = "left";
-  targetCtx.textBaseline = "middle";
-  targetCtx.fillText("MIYU CAFE", 24, 30);
-  targetCtx.font = 'bold 11px "Nunito Sans", sans-serif';
-  targetCtx.fillText("Kasa / Mutfak", 460, 68);
-  targetCtx.fillText("Kahve + Pasta Oyunu", 448, 212);
-
-  paint(targetCtx, 450, 220, 20, 14, "#fff7ea");
-  paint(targetCtx, 452, 224, 16, 8, "#7c5536");
-  paint(targetCtx, 470, 223, 3, 8, "#fff7ea");
-  paint(targetCtx, 474, 220, 22, 4, "#f3d6b0");
-  paint(targetCtx, 474, 224, 22, 10, "#f7b9cc");
-  paint(targetCtx, 482, 217, 6, 4, "#df4f6a");
-
-  if (worldState.cafe.game.active && worldState.cafe.game.currentOrder) {
-    const activeOrder = worldState.cafe.game.currentOrder;
-    const stepInfo = getCafeCurrentOrderStepInfo(activeOrder);
-    paint(targetCtx, 438, 16, 170, 44, "rgba(255, 249, 237, 0.96)");
-    paint(targetCtx, 438, 16, 170, 8, "#ffe0a8");
-    paint(targetCtx, 438, 16, 170, 1, "#2f2a24");
-    paint(targetCtx, 438, 59, 170, 1, "#2f2a24");
-    paint(targetCtx, 438, 16, 1, 44, "#2f2a24");
-    paint(targetCtx, 607, 16, 1, 44, "#2f2a24");
-
-    targetCtx.fillStyle = "#2d2118";
-    targetCtx.textAlign = "left";
-    targetCtx.textBaseline = "top";
-    targetCtx.font = 'bold 10px "Nunito Sans", sans-serif';
-    targetCtx.fillText("MÜŞTERİ SİPARİŞİ", 444, 18);
-    targetCtx.font = 'bold 11px "Nunito Sans", sans-serif';
-    targetCtx.fillText(`${activeOrder.customer}: ${stepInfo.recipe.label}`, 444, 30);
-    targetCtx.font = '10px "Nunito Sans", sans-serif';
-    targetCtx.fillText(`Adım ${stepInfo.stepIndex + 1}/${stepInfo.recipe.steps.length} • Fiş paneli altta`, 444, 43);
-  }
-
-  worldState.cafe.tables.forEach((table) => {
-    targetCtx.beginPath();
-    targetCtx.fillStyle = "#d8a46b";
-    targetCtx.ellipse(table.x, table.y, 18, 14, 0, 0, Math.PI * 2);
-    targetCtx.fill();
-    paint(targetCtx, table.x - 3, table.y + 10, 6, 9, "#8f694f");
-  });
-
-  worldState.cafe.seats.forEach((seat) => {
-    const isOccupied = seat.occupiedBy === "player";
-    targetCtx.beginPath();
-    targetCtx.fillStyle = isOccupied ? "#86c2a0" : "#f7e8c6";
-    targetCtx.arc(seat.x, seat.y, 8, 0, Math.PI * 2);
-    targetCtx.fill();
-    targetCtx.strokeStyle = "#6e5744";
-    targetCtx.lineWidth = 2;
-    targetCtx.stroke();
-  });
-
-  paint(targetCtx, worldState.cafe.exitZone.x, worldState.cafe.exitZone.y, worldState.cafe.exitZone.w, worldState.cafe.exitZone.h, "#9cc4e8");
-  targetCtx.fillStyle = "#17324a";
-  targetCtx.font = 'bold 11px "Nunito Sans", sans-serif';
-  targetCtx.textAlign = "center";
-  targetCtx.textBaseline = "middle";
-  targetCtx.fillText("Meydana Çıkış", worldState.cafe.exitZone.x + worldState.cafe.exitZone.w / 2, worldState.cafe.exitZone.y + worldState.cafe.exitZone.h / 2);
-
-  const shine = 0.4 + Math.sin(now / 220) * 0.14;
-  paint(targetCtx, worldState.cafe.counterZone.x, worldState.cafe.counterZone.y, worldState.cafe.counterZone.w, worldState.cafe.counterZone.h, `rgba(255,255,255,${shine})`);
-}
-
-function drawCafeCoffeePreview(targetCtx, x, y, width, height, progress, now) {
-  paint(targetCtx, x, y, width, height, "#f6ecdd");
-  paint(targetCtx, x + 12, y + 50, width - 24, 4, "#ceaf8a");
-
-  paint(targetCtx, x + 24, y + 22, 38, 26, "#fff8f2");
-  paint(targetCtx, x + 61, y + 27, 6, 14, "#fff8f2");
-  paint(targetCtx, x + 61, y + 28, 4, 12, "#f1e2d2");
-
-  const liquidHeight = 7 + Math.floor(progress * 12);
-  paint(targetCtx, x + 26, y + 38 - liquidHeight, 34, liquidHeight, "#7d5638");
-
-  if (progress > 0.33) {
-    paint(targetCtx, x + 27, y + 23, 32, 4, "#f2dac2");
-  }
-  if (progress > 0.66) {
-    paint(targetCtx, x + 41, y + 22, 6, 3, "#a96f43");
-  }
-
-  if (progress > 0.5) {
-    const steamShift = Math.sin(now / 160) * 1.6;
-    paint(targetCtx, x + 31 + steamShift, y + 10, 2, 6, "rgba(255,255,255,0.78)");
-    paint(targetCtx, x + 42 - steamShift, y + 8, 2, 7, "rgba(255,255,255,0.72)");
-    paint(targetCtx, x + 52 + steamShift * 0.7, y + 11, 2, 5, "rgba(255,255,255,0.7)");
-  }
-}
-
-function drawCafeCakePreview(targetCtx, x, y, width, height, progress) {
-  paint(targetCtx, x, y, width, height, "#faefe2");
-  paint(targetCtx, x + 14, y + 50, width - 28, 4, "#d1b391");
-  paint(targetCtx, x + 24, y + 46, 40, 3, "#eee7dc");
-
-  paint(targetCtx, x + 30, y + 40, 28, 7, "#f1d4af");
-
-  if (progress > 0.15) {
-    paint(targetCtx, x + 29, y + 34, 30, 7, "#d79f66");
-  }
-  if (progress > 0.45) {
-    paint(targetCtx, x + 28, y + 28, 32, 7, "#fff0d9");
-  }
-  if (progress > 0.75) {
-    paint(targetCtx, x + 27, y + 22, 34, 7, "#f4b3cb");
-    paint(targetCtx, x + 42, y + 17, 5, 5, "#d84368");
-  }
-}
-
-function drawCafeRecipePreview(targetCtx, recipeId, x, y, width, height, progress, now) {
-  if (recipeId === "coffee") {
-    drawCafeCoffeePreview(targetCtx, x, y, width, height, progress, now);
-    return;
-  }
-
-  drawCafeCakePreview(targetCtx, x, y, width, height, progress);
-}
-
-function drawCafeGameOverlay(targetCtx) {
-  const game = worldState.cafe.game;
-  if (!game.active || !game.currentOrder) {
-    return;
-  }
-
-  const layout = getCafeGameOverlayLayout();
-  const stepInfo = getCafeCurrentOrderStepInfo(game.currentOrder);
-  const secondsLeft = Math.max(0, Math.ceil((game.orderEndAt - performance.now()) / 1000));
-  const progress = getCafeOrderProgress(game.currentOrder);
-  const dangerPulse = secondsLeft <= 3 ? 0.45 + Math.sin(performance.now() / 90) * 0.3 : 0;
-
-  targetCtx.fillStyle = `rgba(20, 33, 30, ${0.9 + dangerPulse * 0.05})`;
-  targetCtx.fillRect(layout.panelX, layout.panelY, layout.panelW, layout.panelH);
-  targetCtx.strokeStyle = secondsLeft <= 3 ? "#ffcf9b" : "rgba(244, 255, 248, 0.88)";
-  targetCtx.lineWidth = 1.5;
-  targetCtx.strokeRect(layout.panelX + 0.75, layout.panelY + 0.75, layout.panelW - 1.5, layout.panelH - 1.5);
-
-  targetCtx.fillStyle = "#f5fffb";
-  targetCtx.font = 'bold 12px "Nunito Sans", sans-serif';
-  targetCtx.textAlign = "left";
-  targetCtx.textBaseline = "top";
-  targetCtx.fillText("SİPARİŞ FİŞİ", layout.panelX + 12, layout.panelY + 8);
-  targetCtx.font = 'bold 11px "Nunito Sans", sans-serif';
-  targetCtx.fillText(`Müşteri: ${game.currentOrder.customer}`, layout.panelX + 12, layout.panelY + 24);
-  targetCtx.fillText(`İstenen: ${stepInfo.recipe.label}`, layout.panelX + 124, layout.panelY + 24);
-
-  targetCtx.textAlign = "right";
-  targetCtx.fillStyle = secondsLeft <= 3 ? "#ffd4a6" : "#ddf8ee";
-  targetCtx.fillText(`Süre ${secondsLeft}s`, layout.panelX + layout.panelW - 12, layout.panelY + 8);
-  targetCtx.fillStyle = "#c5e8dc";
-  targetCtx.fillText(`Skor ${game.score} • Seri x${game.streak}`, layout.panelX + layout.panelW - 12, layout.panelY + 24);
-
-  drawCafeRecipePreview(
-    targetCtx,
-    stepInfo.recipe.id,
-    layout.previewX,
-    layout.previewY,
-    layout.previewW,
-    layout.previewH,
-    progress,
-    performance.now()
-  );
-
-  const dotsX = layout.panelX + 124;
-  const dotsY = layout.panelY + 52;
-  for (let i = 0; i < stepInfo.recipe.steps.length; i += 1) {
-    targetCtx.beginPath();
-    if (i < game.currentOrder.stepIndex) {
-      targetCtx.fillStyle = "#86d1b2";
-    } else if (i === stepInfo.stepIndex) {
-      targetCtx.fillStyle = "#ffe0ae";
-    } else {
-      targetCtx.fillStyle = "rgba(245, 255, 251, 0.32)";
-    }
-    targetCtx.arc(dotsX + i * 16, dotsY, 4.5, 0, Math.PI * 2);
-    targetCtx.fill();
-  }
-
-  targetCtx.fillStyle = "#effff6";
-  targetCtx.textAlign = "left";
-  targetCtx.font = 'bold 11px "Nunito Sans", sans-serif';
-  targetCtx.fillText(
-    `Aşama ${stepInfo.stepIndex + 1}/${stepInfo.recipe.steps.length}: ${stepInfo.step.prompt}`,
-    layout.panelX + 124,
-    layout.panelY + 66
-  );
-  targetCtx.font = '10px "Nunito Sans", sans-serif';
-  targetCtx.fillStyle = "#c7e8da";
-  targetCtx.fillText("Seçim: 1-2-3 veya kutuya tıkla", layout.panelX + 124, layout.panelY + 80);
-
-  const optionColors = ["#9fd4f1", "#f0c89e", "#b9e4c2"];
-  layout.choiceRects.forEach((card, index) => {
-    targetCtx.fillStyle = optionColors[index];
-    targetCtx.fillRect(card.x, card.y, card.w, card.h);
-    targetCtx.strokeStyle = "#2a3d36";
-    targetCtx.lineWidth = 1.5;
-    targetCtx.strokeRect(card.x + 0.75, card.y + 0.75, card.w - 1.5, card.h - 1.5);
-
-    targetCtx.fillStyle = "#24352d";
-    targetCtx.font = 'bold 10px "Nunito Sans", sans-serif';
-    targetCtx.textAlign = "left";
-    targetCtx.fillText(`[${index + 1}]`, card.x + 6, card.y + 5);
-
-    targetCtx.textAlign = "center";
-    targetCtx.font = 'bold 11px "Nunito Sans", sans-serif';
-    targetCtx.fillText(stepInfo.step.options[index], card.x + card.w / 2, card.y + 22);
-    targetCtx.font = '10px "Nunito Sans", sans-serif';
-    targetCtx.fillText("Seç", card.x + card.w / 2, card.y + 35);
-  });
-}
-
-function drawClubInteriorMap(targetCtx, now) {
-  paint(targetCtx, 0, 0, CLUB_WIDTH, CLUB_HEIGHT, "#1a1624");
-  paint(targetCtx, 0, 0, CLUB_WIDTH, 66, "#231d32");
-  paint(targetCtx, 0, CLUB_HEIGHT - 36, CLUB_WIDTH, 36, "#1f1a2d");
-
-  for (let x = 0; x < CLUB_WIDTH; x += 30) {
-    const alpha = 0.1 + Math.sin((now + x * 9) / 560) * 0.05;
-    paint(targetCtx, x, 72, 16, CLUB_HEIGHT - 110, `rgba(255,255,255,${alpha})`);
-  }
-
-  const dance = worldState.club.danceZone;
-  for (let x = dance.x; x < dance.x + dance.w; x += 24) {
-    for (let y = dance.y; y < dance.y + dance.h; y += 24) {
-      const cell = Math.floor((x - dance.x) / 24) + Math.floor((y - dance.y) / 24);
-      const pulse = Math.sin(now / 180 + cell * 0.7);
-      const shade = pulse > 0 ? "#5fe4d4" : "#f86db3";
-      paint(targetCtx, x + 1, y + 1, 22, 22, shade);
-    }
-  }
-
-  paint(targetCtx, dance.x - 6, dance.y - 6, dance.w + 12, 4, "#f8b5e0");
-  paint(targetCtx, dance.x - 6, dance.y + dance.h + 2, dance.w + 12, 4, "#8debf6");
-  paint(targetCtx, dance.x - 6, dance.y - 6, 4, dance.h + 12, "#8debf6");
-  paint(targetCtx, dance.x + dance.w + 2, dance.y - 6, 4, dance.h + 12, "#f8b5e0");
-
-  paint(targetCtx, 252, 40, 156, 66, "#3a2c57");
-  paint(targetCtx, 264, 52, 132, 22, "#634b8e");
-  paint(targetCtx, 266, 76, 128, 20, "#271f3d");
-  paint(targetCtx, 310, 58, 40, 8, "#83f7e5");
-  paint(targetCtx, 316, 66, 28, 6, "#f8b6df");
-  paint(targetCtx, 174, 76, 20, 34, "#2c2540");
-  paint(targetCtx, 466, 76, 20, 34, "#2c2540");
-  paint(targetCtx, 178, 84, 12, 18, "#80d5ff");
-  paint(targetCtx, 470, 84, 12, 18, "#80d5ff");
-
-  paint(targetCtx, 88, 96, 44, 226, "#4a2e62");
-  paint(targetCtx, 528, 96, 44, 226, "#4a2e62");
-  paint(targetCtx, 68, 320, 72, 20, "#3d294f");
-  paint(targetCtx, 520, 320, 72, 20, "#3d294f");
-
-  worldState.club.seats.forEach((seat) => {
-    const isOccupied = seat.occupiedBy === "player";
-    targetCtx.beginPath();
-    targetCtx.fillStyle = isOccupied ? "#9ef5c8" : "#f6d6ff";
-    targetCtx.arc(seat.x, seat.y, 8, 0, Math.PI * 2);
-    targetCtx.fill();
-    targetCtx.strokeStyle = "#2b2035";
-    targetCtx.lineWidth = 2;
-    targetCtx.stroke();
-  });
-
-  paint(
-    targetCtx,
-    worldState.club.exitZone.x,
-    worldState.club.exitZone.y,
-    worldState.club.exitZone.w,
-    worldState.club.exitZone.h,
-    "#89b8ff"
-  );
-  targetCtx.fillStyle = "#17253b";
-  targetCtx.font = 'bold 11px "Nunito Sans", sans-serif';
-  targetCtx.textAlign = "center";
-  targetCtx.textBaseline = "middle";
-  targetCtx.fillText(
-    "Meydana Çıkış",
-    worldState.club.exitZone.x + worldState.club.exitZone.w / 2,
-    worldState.club.exitZone.y + worldState.club.exitZone.h / 2
-  );
-
-  const dancePulse = 0.2 + Math.sin(now / 130) * 0.14;
-  paint(
-    targetCtx,
-    worldState.club.danceZone.x,
-    worldState.club.danceZone.y,
-    worldState.club.danceZone.w,
-    worldState.club.danceZone.h,
-    `rgba(255,255,255,${dancePulse})`
-  );
-
-  targetCtx.fillStyle = "#f3e8ff";
-  targetCtx.font = 'bold 13px "Nunito Sans", sans-serif';
-  targetCtx.textAlign = "left";
-  targetCtx.textBaseline = "middle";
-  targetCtx.fillText("MIYU DANCE CLUB", 22, 30);
-  targetCtx.font = 'bold 11px "Nunito Sans", sans-serif';
-  targetCtx.fillText("Dans Pisti", dance.x + 8, dance.y - 14);
-  targetCtx.fillText("Kenar Oturma Alanı", 48, 84);
-  targetCtx.fillText("Kenar Oturma Alanı", 494, 84);
-}
-
-function drawClubGameOverlay(targetCtx) {
-  const game = worldState.club.game;
-  if (!game.active || !game.sequence.length) {
-    return;
-  }
-
-  const panelW = 392;
-  const panelH = 132;
-  const panelX = Math.max(8, Math.floor((worldCanvas.width - panelW) / 2));
-  const panelY = 8;
-  const msLeft = getClubDanceMsLeft();
-  const secondsLeft = Math.ceil(msLeft / 1000);
-  const expectedKey = getClubDanceCurrentKey();
-  const expectedLabel = expectedKey ? getClubDanceKeyLabel(expectedKey) : "-";
-  const timeRatio = game.keyDurationMs > 0 ? clamp(msLeft / game.keyDurationMs, 0, 1) : 0;
-
-  targetCtx.fillStyle = "rgba(16, 16, 28, 0.9)";
-  targetCtx.fillRect(panelX, panelY, panelW, panelH);
-  targetCtx.strokeStyle = secondsLeft <= 2 ? "#ffd1a4" : "rgba(226, 247, 255, 0.88)";
-  targetCtx.lineWidth = 1.5;
-  targetCtx.strokeRect(panelX + 0.75, panelY + 0.75, panelW - 1.5, panelH - 1.5);
-
-  targetCtx.fillStyle = "#e9fbff";
-  targetCtx.textAlign = "left";
-  targetCtx.textBaseline = "top";
-  targetCtx.font = 'bold 12px "Nunito Sans", sans-serif';
-  targetCtx.fillText("DANS KOMBO", panelX + 12, panelY + 8);
-  targetCtx.font = '11px "Nunito Sans", sans-serif';
-  targetCtx.fillText("Sırayı W A S D ile takip et", panelX + 12, panelY + 24);
-  targetCtx.fillText("Süre barı tüm kombo için geçerli", panelX + 12, panelY + 38);
-  targetCtx.fillText(`Hedef: ${expectedLabel}`, panelX + 12, panelY + 50);
-
-  targetCtx.textAlign = "right";
-  targetCtx.fillStyle = secondsLeft <= 2 ? "#ffd1a4" : "#cbf2ff";
-  targetCtx.fillText(`Süre ${secondsLeft}s`, panelX + panelW - 12, panelY + 8);
-  targetCtx.fillStyle = "#b8e8ff";
-  targetCtx.fillText(`Skor ${game.score} • Seri x${game.streak} • Kaçan ${game.misses}`, panelX + panelW - 12, panelY + 24);
-  targetCtx.fillText("Q: oyundan çık", panelX + panelW - 12, panelY + 40);
-
-  const barX = panelX + 12;
-  const barY = panelY + 62;
-  const barW = panelW - 24;
-  const barH = 8;
-  let barColor = "#67e8a4";
-  if (timeRatio < 0.35) {
-    barColor = "#ff9c7c";
-  } else if (timeRatio < 0.65) {
-    barColor = "#ffd56f";
-  }
-  paint(targetCtx, barX, barY, barW, barH, "#2d334a");
-  paint(targetCtx, barX, barY, Math.max(0, Math.floor(barW * timeRatio)), barH, barColor);
-  targetCtx.strokeStyle = "rgba(230, 242, 255, 0.5)";
-  targetCtx.lineWidth = 1;
-  targetCtx.strokeRect(barX + 0.5, barY + 0.5, barW - 1, barH - 1);
-
-  const tileW = 40;
-  const tileH = 44;
-  const tileGap = 6;
-  const rowWidth = game.sequence.length * tileW + Math.max(0, game.sequence.length - 1) * tileGap;
-  const startX = panelX + Math.floor((panelW - rowWidth) / 2);
-  const tileY = panelY + 78;
-
-  game.sequence.forEach((key, index) => {
-    let fill = "#3a3d5c";
-    if (index < game.inputIndex) {
-      fill = "#84d89e";
-    } else if (index === game.inputIndex) {
-      const pulse = 0.72 + Math.sin(performance.now() / 100) * 0.18;
-      fill = `rgba(247, 212, 125, ${pulse})`;
+    function drawMapLabel(x, y, text, options = {}) {
+      const background = options.background || "rgba(255, 248, 230, 0.9)";
+      const textColor = options.textColor || "#2f2823";
+      const border = options.border || "rgba(55, 45, 38, 0.42)";
+      worldCtx.font = '700 10px "Trebuchet MS", "Segoe UI", sans-serif';
+      const width = Math.ceil(worldCtx.measureText(text).width) + 10;
+      const left = Math.round(x - width / 2);
+      const top = Math.round(y - 13);
+      paint(worldCtx, left, top, width, 14, background);
+      worldCtx.strokeStyle = border;
+      worldCtx.strokeRect(left + 0.5, top + 0.5, width - 1, 13);
+      worldCtx.fillStyle = textColor;
+      worldCtx.textAlign = "center";
+      worldCtx.textBaseline = "middle";
+      worldCtx.fillText(text, x, top + 7);
     }
 
-    const x = startX + index * (tileW + tileGap);
-    paint(targetCtx, x, tileY, tileW, tileH, fill);
-    targetCtx.strokeStyle = "#1e2337";
-    targetCtx.lineWidth = 1.5;
-    targetCtx.strokeRect(x + 0.75, tileY + 0.75, tileW - 1.5, tileH - 1.5);
+    function drawSquareBuildings() {
+      const buildingDefs = [
+        {
+          name: "Miyu Kafe",
+          x: 90,
+          y: 82,
+          w: 144,
+          h: 88,
+          roof: "#d27b5e",
+          wall: "#f6d6b9",
+          door: "#8d5c44",
+          window: "#b0e7ff"
+        },
+        {
+          name: "Arcade Pasajı",
+          x: 352,
+          y: 60,
+          w: 138,
+          h: 90,
+          roof: "#8c6fdf",
+          wall: "#ddd5ff",
+          door: "#51448f",
+          window: "#f6f2ff"
+        },
+        {
+          name: "İskele Ofisi",
+          x: 614,
+          y: 82,
+          w: 144,
+          h: 88,
+          roof: "#5d92cd",
+          wall: "#d4ebff",
+          door: "#3f6f9e",
+          window: "#edf7ff"
+        },
+        {
+          name: "Moda Dükkanı",
+          x: 102,
+          y: 356,
+          w: 140,
+          h: 90,
+          roof: "#d96a95",
+          wall: "#ffd7e7",
+          door: "#8f4664",
+          window: "#fff0f8"
+        },
+        {
+          name: "Meydan Holü",
+          x: 352,
+          y: 390,
+          w: 136,
+          h: 88,
+          roof: "#8a8fa3",
+          wall: "#e5e8f4",
+          door: "#5d6278",
+          window: "#f7f8ff"
+        },
+        {
+          name: "Sahne Kulübü",
+          x: 610,
+          y: 352,
+          w: 150,
+          h: 96,
+          roof: "#5761b8",
+          wall: "#d3d8ff",
+          door: "#3b447f",
+          window: "#eff1ff"
+        }
+      ];
 
-    targetCtx.fillStyle = "#1f2437";
-    targetCtx.textAlign = "center";
-    targetCtx.font = 'bold 15px "Nunito Sans", sans-serif';
-    targetCtx.fillText(key.toUpperCase(), x + tileW / 2, tileY + 10);
-    targetCtx.font = 'bold 13px "Nunito Sans", sans-serif';
-    targetCtx.fillText(getClubDanceKeySymbol(key), x + tileW / 2, tileY + 24);
-  });
-}
+      buildingDefs.forEach((building) => {
+        const roofHeight = 12;
+        paint(worldCtx, building.x, building.y, building.w, building.h, building.wall);
+        paint(worldCtx, building.x - 4, building.y - roofHeight, building.w + 8, roofHeight, building.roof);
+        paint(worldCtx, building.x, building.y + building.h - 2, building.w, 2, "rgba(53, 40, 31, 0.26)");
 
-function getPlayerDanceOffset(now) {
-  if (worldState.mode !== "club") {
-    return { x: 0, y: 0, glow: 0 };
-  }
+        const doorWidth = 16;
+        paint(
+          worldCtx,
+          building.x + Math.floor((building.w - doorWidth) / 2),
+          building.y + building.h - 24,
+          doorWidth,
+          24,
+          building.door
+        );
 
-  const game = worldState.club.game;
-  if (!game.active) {
-    return { x: 0, y: 0, glow: 0 };
-  }
+        for (let row = 0; row < 2; row += 1) {
+          for (let col = 0; col < 3; col += 1) {
+            paint(worldCtx, building.x + 18 + col * 35, building.y + 18 + row * 24, 14, 11, building.window);
+          }
+        }
 
-  let x = Math.sin(now / 120) * 1.2;
-  let y = Math.sin(now / 85) * 2.2;
-  let glow = 0.55 + Math.sin(now / 95) * 0.22;
-
-  if (game.inputFlashUntil > now) {
-    if (game.inputFlashKey === "w") {
-      y -= 2.4;
-    } else if (game.inputFlashKey === "s") {
-      y += 1.8;
-    } else if (game.inputFlashKey === "a") {
-      x -= 2.1;
-    } else if (game.inputFlashKey === "d") {
-      x += 2.1;
+        drawMapLabel(building.x + Math.floor(building.w / 2), building.y - 14, building.name);
+      });
     }
-    glow += 0.25;
+
+    function drawSquareCenterDetails(now) {
+      paint(worldCtx, 398, 246, 64, 64, "#e1f6ff");
+      paint(worldCtx, 404, 252, 52, 52, "#c8edff");
+      paint(worldCtx, 424, 258, 12, 12, "#7cc8f1");
+      paint(worldCtx, 421, 269, 18, 4, "#8fdbff");
+      const wave = Math.sin(now / 280) * 2;
+      paint(worldCtx, 427, 264 + wave, 6, 10, "#9ee3ff");
+      drawMapLabel(430, 238, "Miyu Çeşmesi");
+    }
+
+    function drawInteractableMarkers(now) {
+      worldCtx.textAlign = "center";
+      worldCtx.textBaseline = "middle";
+      worldCtx.font = '700 8px "Trebuchet MS", "Segoe UI", sans-serif';
+
+      worldState.interactables.forEach((item, index) => {
+        const pulse = (Math.sin(now / 220 + index * 0.8) + 1) / 2;
+        const tone = item.id === "fashion-shop"
+          ? "rgba(238, 132, 178, 0.82)"
+          : item.id === "cafe"
+            ? "rgba(245, 176, 102, 0.8)"
+            : item.id === "town-hall"
+              ? "rgba(124, 146, 196, 0.82)"
+            : item.id === "stage-club"
+              ? "rgba(114, 129, 234, 0.8)"
+              : "rgba(108, 162, 124, 0.78)";
+
+        const markerW = 14;
+        const markerH = 12;
+        const markerX = Math.round(item.x + item.w / 2 - markerW / 2);
+        const markerY = Math.round(item.y + item.h / 2 - markerH / 2);
+
+        paint(worldCtx, markerX, markerY, markerW, markerH, tone);
+        worldCtx.strokeStyle = `rgba(34, 26, 19, ${0.45 + pulse * 0.4})`;
+        worldCtx.strokeRect(markerX + 0.5, markerY + 0.5, markerW - 1, markerH - 1);
+        worldCtx.fillStyle = "#fff8ec";
+        worldCtx.fillText("E", markerX + markerW / 2, markerY + markerH / 2 + 0.5);
+
+        drawMapLabel(item.x + item.w / 2, markerY - 5, item.label, {
+          background: "rgba(255, 250, 240, 0.88)"
+        });
+      });
+    }
+
+    function drawTownHallInteractables(now) {
+      const interactables = worldState.hall.interactables || [];
+      worldCtx.font = '700 8px "Trebuchet MS", "Segoe UI", sans-serif';
+      worldCtx.textAlign = "center";
+      worldCtx.textBaseline = "middle";
+
+      interactables.forEach((item, index) => {
+        const pulse = (Math.sin(now / 240 + index) + 1) / 2;
+        const tone = item.id === "hall-exit"
+          ? "rgba(118, 198, 160, 0.82)"
+          : "rgba(124, 154, 214, 0.82)";
+        const markerW = 16;
+        const markerH = 12;
+        const markerX = Math.round(item.x + item.w / 2 - markerW / 2);
+        const markerY = Math.round(item.y + item.h / 2 - markerH / 2);
+
+        paint(worldCtx, markerX, markerY, markerW, markerH, tone);
+        worldCtx.strokeStyle = `rgba(33, 28, 24, ${0.5 + pulse * 0.35})`;
+        worldCtx.strokeRect(markerX + 0.5, markerY + 0.5, markerW - 1, markerH - 1);
+        worldCtx.fillStyle = "#fff8ec";
+        worldCtx.fillText("E", markerX + markerW / 2, markerY + markerH / 2 + 0.5);
+        drawMapLabel(item.x + item.w / 2, markerY - 7, item.label, {
+          background: "rgba(250, 248, 243, 0.92)"
+        });
+      });
+    }
+
+    function drawTownHallMap(now) {
+      const hall = worldState.hall;
+      paint(worldCtx, 0, 0, hall.width, hall.height, "#e0d4c1");
+      paint(worldCtx, 0, 132, hall.width, hall.height - 132, "#f3ead7");
+      paint(worldCtx, 0, 0, hall.width, 24, "#7a5d46");
+      paint(worldCtx, 0, hall.height - 26, hall.width, 26, "#c9b598");
+
+      const stage = { x: 184, y: 36, w: 332, h: 92 };
+      paint(worldCtx, stage.x, stage.y, stage.w, stage.h, "#8a5d3c");
+      paint(worldCtx, stage.x + 8, stage.y + 8, stage.w - 16, stage.h - 16, "#b37a4e");
+      paint(worldCtx, stage.x, stage.y + stage.h, stage.w, 10, "#6f472d");
+      for (let plank = 0; plank < 7; plank += 1) {
+        paint(worldCtx, stage.x + 18 + plank * 44, stage.y + 12, 4, stage.h - 24, "rgba(111,71,45,0.32)");
+      }
+
+      const lightPulse = (Math.sin(now / 260) + 1) / 2;
+      worldCtx.fillStyle = `rgba(255, 236, 186, ${0.22 + lightPulse * 0.18})`;
+      worldCtx.beginPath();
+      worldCtx.arc(stage.x + 72, stage.y + 34, 20, 0, Math.PI * 2);
+      worldCtx.fill();
+      worldCtx.beginPath();
+      worldCtx.arc(stage.x + stage.w - 72, stage.y + 34, 20, 0, Math.PI * 2);
+      worldCtx.fill();
+      drawMapLabel(stage.x + stage.w / 2, stage.y - 8, "Sahne", {
+        background: "rgba(255, 247, 228, 0.9)"
+      });
+
+      const leftNpcArea = { x: 170, y: 132, w: 102, h: 216 };
+      const rightNpcArea = { x: 428, y: 132, w: 102, h: 216 };
+      paint(worldCtx, leftNpcArea.x, leftNpcArea.y, leftNpcArea.w, leftNpcArea.h, "#dbc8ae");
+      paint(worldCtx, rightNpcArea.x, rightNpcArea.y, rightNpcArea.w, rightNpcArea.h, "#dbc8ae");
+      paint(worldCtx, leftNpcArea.x + 8, leftNpcArea.y + 50, leftNpcArea.w - 16, 9, "#987252");
+      paint(worldCtx, leftNpcArea.x + 8, leftNpcArea.y + 152, leftNpcArea.w - 16, 9, "#987252");
+      paint(worldCtx, rightNpcArea.x + 8, rightNpcArea.y + 50, rightNpcArea.w - 16, 9, "#987252");
+      paint(worldCtx, rightNpcArea.x + 8, rightNpcArea.y + 152, rightNpcArea.w - 16, 9, "#987252");
+      drawMapLabel(leftNpcArea.x + leftNpcArea.w / 2, leftNpcArea.y - 8, "Görev NPC", {
+        background: "rgba(250, 241, 225, 0.9)"
+      });
+      drawMapLabel(rightNpcArea.x + rightNpcArea.w / 2, rightNpcArea.y - 8, "Görev NPC", {
+        background: "rgba(250, 241, 225, 0.9)"
+      });
+
+      paint(worldCtx, 222, 148, 256, 146, "rgba(197, 174, 141, 0.32)");
+      (hall.chairs || []).forEach((chair, index) => {
+        const seatColor = index % 2 === 0 ? "#a17756" : "#946b4d";
+        paint(worldCtx, chair.x + 2, chair.y, chair.w - 4, 7, "#c69a74");
+        paint(worldCtx, chair.x, chair.y + 7, chair.w, chair.h - 7, seatColor);
+        paint(worldCtx, chair.x + 2, chair.y + chair.h - 1, 2, 6, "#6b4b34");
+        paint(worldCtx, chair.x + chair.w - 4, chair.y + chair.h - 1, 2, 6, "#6b4b34");
+      });
+      drawMapLabel(350, 156, "Oturma Alanı", {
+        background: "rgba(255, 252, 245, 0.88)"
+      });
+
+      paint(worldCtx, hall.exitZone.x, hall.exitZone.y, hall.exitZone.w, hall.exitZone.h, "#8ac7a0");
+      drawMapLabel(hall.exitZone.x + hall.exitZone.w / 2, hall.exitZone.y - 8, "Meydana Çıkış", {
+        background: "rgba(245, 255, 248, 0.9)"
+      });
+
+      drawTownHallInteractables(now);
+    }
+
+    function drawMap(now) {
+      if (worldState.mode === "hall") {
+        drawTownHallMap(now);
+        return;
+      }
+      paint(worldCtx, 0, 0, WORLD_WIDTH, WORLD_HEIGHT, "#d5ebff");
+      paint(worldCtx, 0, 142, WORLD_WIDTH, WORLD_HEIGHT - 142, "#d8f0da");
+      paint(worldCtx, 0, 250, WORLD_WIDTH, 62, "#f6ead2");
+      paint(worldCtx, 401, 0, 58, WORLD_HEIGHT, "#f6ead2");
+      paint(worldCtx, 140, 236, 160, 32, "#f6ead2");
+      paint(worldCtx, 560, 236, 160, 32, "#f6ead2");
+      paint(worldCtx, 404, 406, 52, 120, "#f6ead2");
+      drawSquareBuildings();
+      drawSquareCenterDetails(now);
+      worldCtx.strokeStyle = "rgba(73, 55, 42, 0.38)";
+      WORLD_BLOCKS.forEach((block) => worldCtx.strokeRect(block.x + 0.5, block.y + 0.5, block.w - 1, block.h - 1));
+      worldState.collectibles.forEach((item, index) => {
+        const bob = Math.sin(now / 230 + item.phase + index * 0.3) * 1.8;
+        paint(worldCtx, item.x - 1, item.y + bob - 4, 2, 8, "#f8c95f");
+        paint(worldCtx, item.x - 4, item.y + bob - 1, 8, 2, "#f8c95f");
+      });
+      drawInteractableMarkers(now);
+    }
+
+    function drawFashionOverlayShapes(targetCtx, topX, topY, scale, look) {
+      const drawRect = (x, y, w, h, color) => {
+        paint(
+          targetCtx,
+          Math.round(topX + x * scale),
+          Math.round(topY + y * scale),
+          Math.max(1, Math.round(w * scale)),
+          Math.max(1, Math.round(h * scale)),
+          color
+        );
+      };
+
+      if (look.outfitId === "hat-sakura-beret") {
+        drawRect(8, 7, 16, 5, "rgba(242,151,185,0.9)");
+        drawRect(6, 12, 20, 2, "rgba(188,74,122,0.9)");
+        drawRect(10, 8, 12, 1, "rgba(255,205,226,0.9)");
+      } else if (look.outfitId === "hat-neon-cap") {
+        drawRect(8, 8, 16, 4, "rgba(175,255,128,0.9)");
+        drawRect(7, 12, 18, 1, "#305f1f");
+        drawRect(21, 12, 6, 1, "rgba(135,238,89,0.92)");
+      } else if (look.outfitId === "hat-cloud-beanie") {
+        drawRect(7, 6, 18, 6, "rgba(178,216,255,0.9)");
+        drawRect(6, 12, 20, 2, "rgba(120,162,214,0.88)");
+        drawRect(12, 7, 8, 1, "rgba(228,244,255,0.98)");
+      } else if (look.outfitId === "hat-sunset-fedora") {
+        drawRect(10, 7, 12, 5, "rgba(255,177,120,0.92)");
+        drawRect(6, 12, 20, 2, "rgba(244,112,98,0.86)");
+        drawRect(10, 10, 12, 1, "rgba(255,234,172,0.95)");
+      }
+
+      if (look.accessoryId === "acc-star-pin") {
+        drawRect(18, 21, 2, 4, "#f8cd55");
+        drawRect(17, 22, 4, 2, "#f8cd55");
+      } else if (look.accessoryId === "acc-cat-ear-cap") {
+        drawRect(10, 6, 4, 3, "#4b4b52");
+        drawRect(20, 6, 4, 3, "#4b4b52");
+        drawRect(11, 7, 2, 1, "#ffd4dd");
+        drawRect(21, 7, 2, 1, "#ffd4dd");
+      } else if (look.accessoryId === "acc-rainbow-tail") {
+        drawRect(3, 22, 5, 1, "#ff6b6b");
+        drawRect(2, 23, 6, 1, "#ffb156");
+        drawRect(1, 24, 6, 1, "#f4ec61");
+        drawRect(2, 25, 6, 1, "#66d287");
+        drawRect(3, 26, 5, 1, "#56a7e2");
+      } else if (look.accessoryId === "acc-moon-glasses") {
+        drawRect(11, 15, 4, 1, "rgba(68,74,92,0.9)");
+        drawRect(11, 15, 1, 3, "rgba(68,74,92,0.9)");
+        drawRect(14, 15, 1, 3, "rgba(68,74,92,0.9)");
+        drawRect(11, 17, 4, 1, "rgba(68,74,92,0.9)");
+        drawRect(17, 15, 4, 1, "rgba(68,74,92,0.9)");
+        drawRect(17, 15, 1, 3, "rgba(68,74,92,0.9)");
+        drawRect(20, 15, 1, 3, "rgba(68,74,92,0.9)");
+        drawRect(17, 17, 4, 1, "rgba(68,74,92,0.9)");
+        drawRect(15, 16, 2, 1, "rgba(68,74,92,0.85)");
+      }
+
+      if (look.shoeId === "shoe-mint-sneakers") {
+        drawRect(10, 26, 5, 3, "#8adbc2");
+        drawRect(17, 26, 5, 3, "#8adbc2");
+        drawRect(10, 28, 5, 1, "#4a8b76");
+        drawRect(17, 28, 5, 1, "#4a8b76");
+      } else if (look.shoeId === "shoe-neon-boots") {
+        drawRect(9, 25, 6, 4, "#9ba7ff");
+        drawRect(17, 25, 6, 4, "#9ba7ff");
+        drawRect(10, 24, 4, 1, "#d0f961");
+        drawRect(18, 24, 4, 1, "#d0f961");
+      } else if (look.shoeId === "shoe-cloud-slippers") {
+        drawRect(9, 26, 6, 3, "#f4f8ff");
+        drawRect(17, 26, 6, 3, "#f4f8ff");
+        drawRect(10, 27, 4, 1, "#b7c4df");
+        drawRect(18, 27, 4, 1, "#b7c4df");
+      } else if (look.shoeId === "shoe-comet-runners") {
+        drawRect(9, 26, 6, 3, "#7bc1ff");
+        drawRect(17, 26, 6, 3, "#7bc1ff");
+        drawRect(10, 25, 4, 1, "#ffffff");
+        drawRect(18, 25, 4, 1, "#ffffff");
+        drawRect(9, 28, 6, 1, "#3d6da3");
+        drawRect(17, 28, 6, 1, "#3d6da3");
+      }
+    }
+
+    function drawPlayerFashionOverlay(topX, topY) {
+      const look = {
+        outfitId: getEquippedFashionItemId("outfit"),
+        accessoryId: getEquippedFashionItemId("accessory"),
+        shoeId: getEquippedFashionItemId("shoe")
+      };
+      drawFashionOverlayShapes(worldCtx, topX, topY, 34 / 32, look);
+    }
+
+    function drawCharacter(entity, isPlayer) {
+      const spriteWidth = 34;
+      const spriteHeight = 34;
+      const topX = Math.round(entity.x - spriteWidth / 2);
+      const topY = Math.round(entity.y - spriteHeight);
+      worldCtx.beginPath();
+      worldCtx.fillStyle = "rgba(40,50,50,0.2)";
+      worldCtx.ellipse(entity.x, entity.y + 1, 12, 5, 0, 0, Math.PI * 2);
+      worldCtx.fill();
+      if (entity.sprite) { worldCtx.drawImage(entity.sprite, topX, topY, spriteWidth, spriteHeight); }
+      if (isPlayer) {
+        drawPlayerFashionOverlay(topX, topY);
+      }
+      worldCtx.fillStyle = isPlayer ? "#123d35" : "#1f2b25";
+      worldCtx.font = 'bold 12px "Trebuchet MS", "Segoe UI", sans-serif';
+      worldCtx.textAlign = "center";
+      worldCtx.textBaseline = "bottom";
+      worldCtx.fillText(entity.name, entity.x, topY - 3);
+    }
+
+    function renderWorld(now) {
+      const cameraX = Math.round(worldState.camera.x);
+      const cameraY = Math.round(worldState.camera.y);
+      worldCtx.save();
+      worldCtx.clearRect(0, 0, worldCanvas.width, worldCanvas.height);
+      worldCtx.translate(-cameraX, -cameraY);
+      drawMap(now);
+      const entities = worldState.mode === "hall"
+        ? [...(worldState.hall.npcs || [])]
+        : [...worldState.npcs];
+      if (worldState.player) {
+        entities.push(worldState.player);
+      }
+      entities.sort((a, b) => a.y - b.y);
+      entities.forEach((entity) => drawCharacter(entity, entity === worldState.player));
+      worldCtx.restore();
+      drawFashionShopOverlay(worldCtx);
+    }
+
+    function updateWorldFrame(dt, now) {
+      updatePlayerMovement(dt);
+      updateNpcMovement(dt, now);
+      updateTownHallNpcMovement(dt, now);
+      updateSquareCollectibles(now);
+      updateWorldCamera();
+      updateWorldStatus();
+      updateWorldHint();
+      if (worldState.chatUntil > now) { worldChatText.textContent = worldState.chatText; } else { worldChatText.textContent = ""; }
+    }
+
+    function worldLoop(now) {
+      if (!worldState.running) { return; }
+      const dt = Math.min((now - worldState.lastTime) / 1000, 0.05);
+      worldState.lastTime = now;
+      updateWorldFrame(dt, now);
+      renderWorld(now);
+      worldState.rafId = requestAnimationFrame(worldLoop);
+    }
+
+    function startWorldLoop() {
+      if (worldState.running) { return; }
+      worldState.running = true;
+      worldState.lastTime = performance.now();
+      worldState.rafId = requestAnimationFrame(worldLoop);
+    }
+
+    function stopWorldLoop() {
+      worldState.running = false;
+      worldState.keys.up = false;
+      worldState.keys.down = false;
+      worldState.keys.left = false;
+      worldState.keys.right = false;
+      worldState.mouse.active = false;
+      worldState.emote.text = "";
+      worldState.emote.until = 0;
+      stopCafeMiniGame(false);
+      stopClubDanceGame(false);
+      closeFashionShop(false);
+      worldState.mode = "square";
+      stopWorldAudio();
+      if (worldState.rafId) { cancelAnimationFrame(worldState.rafId); worldState.rafId = null; }
+    }
+
+    function resolveCafeGameChoice() {}
+    function stopCafeMiniGame(showMessage = true) { worldState.cafe.game.active = false; if (showMessage) { setWorldChat("Kafe oyunundan çıktın.", 1000); } }
+    function resolveClubDanceInput() {}
+    function stopClubDanceGame(showMessage = true) { worldState.club.game.active = false; if (showMessage) { setWorldChat("Kulüp oyunundan çıktın.", 1000); } }
+
+    return {
+      initializeMiyuSquareWorld,
+      ensureWorldAudio,
+      triggerPlayerEmote,
+      interactInWorld,
+      closeFashionShop,
+      isFashionShopOpen,
+      isFashionShopKey,
+      handleFashionShopKey,
+      handleWorldMouseDown,
+      handleWorldMouseMove,
+      handleWorldMouseUp,
+      setMovementKey,
+      resolveCafeGameChoice,
+      stopCafeMiniGame,
+      resolveClubDanceInput,
+      stopClubDanceGame,
+      startWorldLoop,
+      stopWorldLoop
+    };
   }
-
-  return { x, y, glow: Math.max(0, glow) };
-}
-
-function drawCharacter(targetCtx, entity, isPlayer = false, now = performance.now()) {
-  let danceOffsetX = 0;
-  let danceOffsetY = 0;
-  let danceGlow = 0;
-  if (isPlayer) {
-    const offset = getPlayerDanceOffset(now);
-    danceOffsetX = offset.x;
-    danceOffsetY = offset.y;
-    danceGlow = offset.glow;
-  }
-
-  const spriteWidth = 34;
-  const spriteHeight = 34;
-  const topX = Math.round(entity.x - spriteWidth / 2 + danceOffsetX);
-  const topY = Math.round(entity.y - spriteHeight + danceOffsetY);
-
-  targetCtx.beginPath();
-  targetCtx.fillStyle = "rgba(40,50,50,0.2)";
-  targetCtx.ellipse(
-    entity.x + danceOffsetX * 0.5,
-    entity.y + 1 + danceOffsetY * 0.12,
-    12 + danceGlow * 1.8,
-    5 + danceGlow * 0.7,
-    0,
-    0,
-    Math.PI * 2
-  );
-  targetCtx.fill();
-
-  targetCtx.drawImage(entity.sprite, topX, topY, spriteWidth, spriteHeight);
-
-  if (isPlayer && danceGlow > 0) {
-    targetCtx.beginPath();
-    targetCtx.strokeStyle = `rgba(132, 237, 255, ${0.25 + danceGlow * 0.2})`;
-    targetCtx.lineWidth = 2;
-    targetCtx.arc(
-      entity.x + danceOffsetX * 0.5,
-      entity.y - 6 + danceOffsetY * 0.2,
-      10 + danceGlow * 2.5,
-      0,
-      Math.PI * 2
-    );
-    targetCtx.stroke();
-  }
-
-  targetCtx.fillStyle = isPlayer ? "#123d35" : "#1f2b25";
-  targetCtx.font = 'bold 12px "Nunito Sans", sans-serif';
-  targetCtx.textAlign = "center";
-  targetCtx.textBaseline = "bottom";
-  targetCtx.fillText(entity.name, entity.x + danceOffsetX * 0.45, topY - 3);
-}
-
-function drawPlayerEmoteBubble(targetCtx, now) {
-  if (!worldState.player || !worldState.emote.text || worldState.emote.until <= now) {
-    return;
-  }
-
-  const life = clamp((worldState.emote.until - now) / 900, 0, 1);
-  const x = Math.round(worldState.player.x);
-  const y = Math.round(worldState.player.y - 44 - (1 - life) * 4);
-  const text = worldState.emote.text;
-  const bubbleW = 18 + text.length * 6;
-  const bubbleH = 16;
-
-  paint(targetCtx, x - bubbleW / 2, y - bubbleH / 2, bubbleW, bubbleH, `rgba(255,255,255,${0.82 * life})`);
-  targetCtx.strokeStyle = `rgba(26, 39, 34, ${0.7 * life})`;
-  targetCtx.lineWidth = 1;
-  targetCtx.strokeRect(Math.round(x - bubbleW / 2) + 0.5, Math.round(y - bubbleH / 2) + 0.5, bubbleW - 1, bubbleH - 1);
-  paint(targetCtx, x - 2, y + bubbleH / 2 - 1, 4, 3, `rgba(255,255,255,${0.82 * life})`);
-
-  targetCtx.fillStyle = `rgba(18, 35, 30, ${0.95 * life})`;
-  targetCtx.font = 'bold 10px "Nunito Sans", sans-serif';
-  targetCtx.textAlign = "center";
-  targetCtx.textBaseline = "middle";
-  targetCtx.fillText(text, x, y);
-}
-
-function drawMiniMap(targetCtx) {
-  const miniW = 126;
-  const miniH = 78;
-  const margin = 10;
-  const mapX = worldCanvas.width - miniW - margin;
-  const mapY = margin;
-  const scaleX = miniW / WORLD_WIDTH;
-  const scaleY = miniH / WORLD_HEIGHT;
-
-  targetCtx.fillStyle = "rgba(24, 40, 35, 0.72)";
-  targetCtx.fillRect(mapX, mapY, miniW, miniH);
-  targetCtx.strokeStyle = "rgba(245, 255, 251, 0.88)";
-  targetCtx.lineWidth = 1;
-  targetCtx.strokeRect(mapX + 0.5, mapY + 0.5, miniW - 1, miniH - 1);
-
-  targetCtx.fillStyle = "rgba(246, 234, 210, 0.65)";
-  targetCtx.fillRect(mapX + 2, mapY + 2, miniW - 4, miniH - 4);
-
-  WORLD_BLOCKS.forEach((block) => {
-    targetCtx.fillStyle = "rgba(110, 90, 75, 0.55)";
-    targetCtx.fillRect(
-      mapX + block.x * scaleX,
-      mapY + block.y * scaleY,
-      block.w * scaleX,
-      block.h * scaleY
-    );
-  });
-
-  worldState.npcs.forEach((npc) => {
-    targetCtx.fillStyle = "#7fc7ff";
-    targetCtx.fillRect(mapX + npc.x * scaleX, mapY + npc.y * scaleY, 2, 2);
-  });
-
-  if (worldState.player) {
-    targetCtx.fillStyle = "#ff7d5f";
-    targetCtx.fillRect(mapX + worldState.player.x * scaleX - 1, mapY + worldState.player.y * scaleY - 1, 4, 4);
-  }
-
-  targetCtx.strokeStyle = "#fef7de";
-  targetCtx.strokeRect(
-    mapX + worldState.camera.x * scaleX,
-    mapY + worldState.camera.y * scaleY,
-    worldCanvas.width * scaleX,
-    worldCanvas.height * scaleY
-  );
-}
-
-function renderMiyuSquare(now) {
-  const cameraX = Math.round(worldState.camera.x);
-  const cameraY = Math.round(worldState.camera.y);
-
-  worldCtx.save();
-  worldCtx.clearRect(0, 0, worldCanvas.width, worldCanvas.height);
-  worldCtx.translate(-cameraX, -cameraY);
-  if (worldState.mode === "cafe") {
-    drawCafeInteriorMap(worldCtx, now);
-  } else if (worldState.mode === "club") {
-    drawClubInteriorMap(worldCtx, now);
-  } else {
-    drawMiyuSquareMap(worldCtx, now);
-    drawSquareCollectibles(worldCtx, now);
-  }
-
-  if (worldState.player && worldState.mouse.active) {
-    const mouseVector = getMouseDriveVector();
-    const indicatorX = worldState.player.x + mouseVector.x * 34;
-    const indicatorY = worldState.player.y + mouseVector.y * 34;
-    const pulse = 5 + Math.sin(now / 120) * 1.2;
-
-    worldCtx.beginPath();
-    worldCtx.strokeStyle = "rgba(18, 61, 53, 0.55)";
-    worldCtx.lineWidth = 2;
-    worldCtx.moveTo(worldState.player.x, worldState.player.y);
-    worldCtx.lineTo(indicatorX, indicatorY);
-    worldCtx.stroke();
-
-    worldCtx.beginPath();
-    worldCtx.strokeStyle = "rgba(31, 43, 37, 0.7)";
-    worldCtx.lineWidth = 2;
-    worldCtx.arc(indicatorX, indicatorY, pulse, 0, Math.PI * 2);
-    worldCtx.stroke();
-  }
-
-  const entities = worldState.mode === "square" ? [...worldState.npcs] : [];
-  if (worldState.mode === "cafe" && worldState.cafe.barista) {
-    entities.push(worldState.cafe.barista);
-  }
-  if (worldState.mode === "club" && worldState.club.dj) {
-    entities.push(worldState.club.dj);
-  }
-  if (worldState.player) {
-    entities.push(worldState.player);
-  }
-  entities.sort((a, b) => a.y - b.y);
-
-  entities.forEach((entity) => {
-    const isPlayer = entity === worldState.player;
-    drawCharacter(worldCtx, entity, isPlayer, now);
-  });
-
-  drawPlayerEmoteBubble(worldCtx, now);
-
-  worldCtx.restore();
-  if (worldState.mode === "square") {
-    drawMiniMap(worldCtx);
-  } else if (worldState.mode === "cafe") {
-    drawCafeGameOverlay(worldCtx);
-  } else if (worldState.mode === "club") {
-    drawClubGameOverlay(worldCtx);
-  }
-}
-
-function updateWorldFrame(dt, now) {
-  refreshEventCycle(true);
-  updatePlayerMovement(dt);
-  updateNpcs(dt, now);
-  updateSquareCollectibles(now);
-  updateCafeMiniGame(now);
-  updateClubDanceGame(now);
-  updateWorldCamera();
-  updateWorldStatus();
-  updateWorldAmbience();
-  updateWorldHint();
-
-  if (worldState.chatUntil > now) {
-    worldChatText.textContent = worldState.chatText;
-  } else {
-    worldChatText.textContent = "";
-  }
-}
-
-function worldLoop(now) {
-  if (!worldState.running) {
-    return;
-  }
-
-  const dt = Math.min((now - worldState.lastTime) / 1000, 0.05);
-  worldState.lastTime = now;
-  updateWorldFrame(dt, now);
-  renderMiyuSquare(now);
-  worldState.rafId = requestAnimationFrame(worldLoop);
-}
-
-function startWorldLoop() {
-  if (worldState.running) {
-    return;
-  }
-
-  worldState.running = true;
-  worldState.lastTime = performance.now();
-  worldState.rafId = requestAnimationFrame(worldLoop);
-}
-
-function stopWorldLoop() {
-  worldState.running = false;
-  worldState.keys.up = false;
-  worldState.keys.down = false;
-  worldState.keys.left = false;
-  worldState.keys.right = false;
-  worldState.mouse.active = false;
-  worldState.emote.text = "";
-  worldState.emote.until = 0;
-  stopCafeMiniGame(false);
-  stopClubDanceGame(false);
-  worldState.cafe.seatedSeatId = null;
-  worldState.cafe.seats.forEach((seat) => {
-    seat.occupiedBy = null;
-  });
-  worldState.club.seatedSeatId = null;
-  worldState.club.seats.forEach((seat) => {
-    seat.occupiedBy = null;
-  });
-  worldState.mode = "square";
-  stopWorldAudio();
-
-  if (worldState.rafId) {
-    cancelAnimationFrame(worldState.rafId);
-    worldState.rafId = null;
-  }
-}
-  return {
-    initializeMiyuSquareWorld,
-    ensureWorldAudio,
-    triggerPlayerEmote,
-    interactInWorld,
-    handleWorldMouseDown,
-    handleWorldMouseMove,
-    handleWorldMouseUp,
-    setMovementKey,
-    resolveCafeGameChoice,
-    stopCafeMiniGame,
-    resolveClubDanceInput,
-    stopClubDanceGame,
-    startWorldLoop,
-    stopWorldLoop
-  };
-}
-
 
   global.MiuWorld = {
     CAFE_GAME_KEYS,
@@ -2854,3 +1789,13 @@ function stopWorldLoop() {
     createWorldRuntime
   };
 })(window);
+
+
+
+
+
+
+
+
+
+
