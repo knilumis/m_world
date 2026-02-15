@@ -351,13 +351,15 @@
       barista: null,
       game: {
         active: false,
+        introOpen: false,
         score: 0,
         served: 0,
         streak: 0,
         misses: 0,
         currentOrder: null,
         orderEndAt: 0,
-        tutorialShown: false
+        tutorialShown: false,
+        lastResult: ""
       }
     };
   }

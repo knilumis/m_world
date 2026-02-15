@@ -360,6 +360,18 @@ window.addEventListener("keydown", (event) => {
     return;
   }
 
+  if (worldState.mode === "cafe" && worldState.cafe.game.introOpen) {
+    if (key === "q" || key === "escape") {
+      event.preventDefault();
+      worldRuntime.stopCafeMiniGame();
+      return;
+    }
+    if (WORLD_CONTROL_KEYS.has(key) && key !== "e") {
+      event.preventDefault();
+      return;
+    }
+  }
+
   if (worldState.mode === "cafe" && worldState.cafe.game.active && CAFE_GAME_KEYS.has(key)) {
     event.preventDefault();
     if (key === "q") {
@@ -371,6 +383,11 @@ window.addEventListener("keydown", (event) => {
     if (choice >= 0 && choice < 3) {
       worldRuntime.resolveCafeGameChoice(choice);
     }
+    return;
+  }
+
+  if (worldState.mode === "cafe" && worldState.cafe.game.active && WORLD_CONTROL_KEYS.has(key)) {
+    event.preventDefault();
     return;
   }
 

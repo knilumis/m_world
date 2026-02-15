@@ -26,6 +26,8 @@
     WORLD_START_COLLECTIBLE_COUNT,
     WORLD_WIDTH,
     WORLD_ZONES,
+    CAFE_CUSTOMER_NAMES,
+    CAFE_RECIPES,
     createCafeSceneState,
     createClubSceneState,
     createTownHallSceneState,
@@ -80,6 +82,14 @@
     function paint(targetCtx, x, y, width, height, color) {
       targetCtx.fillStyle = color;
       targetCtx.fillRect(x, y, width, height);
+    }
+
+    function clearMovementIntent() {
+      worldState.keys.up = false;
+      worldState.keys.down = false;
+      worldState.keys.left = false;
+      worldState.keys.right = false;
+      worldState.mouse.active = false;
     }
 
     function ensureInventoryState() {
@@ -143,9 +153,21 @@
       return { x: x - 9, y: y - 7, w: 18, h: 12 };
     }
 
+    function getCafeTableBlocks() {
+      if (!worldState.cafe || !Array.isArray(worldState.cafe.tables)) {
+        return [];
+      }
+      return worldState.cafe.tables.map((table) => ({
+        x: table.x - 16,
+        y: table.y - 12,
+        w: 32,
+        h: 24
+      }));
+    }
+
     function getActiveWorldBlocks() {
       if (worldState.mode === "cafe") {
-        return worldState.cafe.counterBlocks || [];
+        return [...(worldState.cafe.counterBlocks || []), ...getCafeTableBlocks()];
       }
       if (worldState.mode === "club") {
         return worldState.club.blocks || [];
@@ -307,6 +329,53 @@
       });
     }
 
+    function buildCafeBarista() {
+      const parts = buildNpcParts(31);
+      return {
+        name: "Luna",
+        role: "Barista",
+        lines: [
+          "Hoş geldin! Hazırsan kahve oyunu başlatabiliriz.",
+          "Tezgaha yaklaş ve E ile sipariş al."
+        ],
+        x: 560,
+        y: 166,
+        fixed: true,
+        parts,
+        sprite: createMiuSpriteCanvas(parts),
+        nextTalkAt: 0
+      };
+    }
+
+    function populateCafeSeats() {
+      if (!worldState.cafe || !Array.isArray(worldState.cafe.seats)) {
+        return;
+      }
+      worldState.cafe.seats.forEach((seat) => {
+        seat.occupiedBy = null;
+      });
+
+      const candidateSeats = [...worldState.cafe.seats];
+      const occupiedTarget = Math.min(candidateSeats.length, 6 + randomInt(4));
+      const usedNames = new Set();
+      for (let i = 0; i < occupiedTarget; i += 1) {
+        if (candidateSeats.length === 0) {
+          break;
+        }
+        const seatIndex = randomInt(candidateSeats.length);
+        const seat = candidateSeats.splice(seatIndex, 1)[0];
+
+        let guestName = pickRandom(CAFE_CUSTOMER_NAMES);
+        let guard = 0;
+        while (usedNames.has(guestName) && guard < 16) {
+          guestName = pickRandom(CAFE_CUSTOMER_NAMES);
+          guard += 1;
+        }
+        usedNames.add(guestName);
+        seat.occupiedBy = guestName;
+      }
+    }
+
     function buildWorldInteractables() {
       return [
         { id: "cafe", label: "Kafe", x: 156, y: 177, w: 32, h: 18, message: "Kafe: Sıcak kakao ve sohbet masaları hazır." },
@@ -328,6 +397,8 @@
       worldState.collectibles = createSquareCollectibles(WORLD_START_COLLECTIBLE_COUNT);
       worldState.nextCollectibleRespawnAt = performance.now() + WORLD_COLLECTIBLE_RESPAWN_MS;
       worldState.cafe = createCafeSceneState();
+      worldState.cafe.barista = buildCafeBarista();
+      populateCafeSeats();
       worldState.club = createClubSceneState();
       worldState.hall = createTownHallSceneState();
       worldState.hall.npcs = buildTownHallNpcs();
@@ -938,6 +1009,196 @@
       drawFashionConfirmDialog(targetCtx, layout);
     }
 
+    function getCafeCupStyle(order, usePrepared) {
+      const sourceChoices = usePrepared ? order.selectedChoices : order.expectedChoices;
+      return {
+        bean: sourceChoices[0] ?? -1,
+        milk: sourceChoices[1] ?? -1,
+        topping: sourceChoices[2] ?? -1
+      };
+    }
+
+    function drawCafeCupPreview(targetCtx, x, y, style, label, order) {
+      const liquidColors = ["#5a371f", "#8c6643", "#4b2b17"];
+      const milkFoam = ["#f6e6cf", "#f3ddbc", "#efe0ca"];
+      const liquidColor = style.bean >= 0 ? liquidColors[style.bean % liquidColors.length] : "#a58366";
+      const foamColor = style.milk >= 0 ? milkFoam[style.milk % milkFoam.length] : "#dbc8b5";
+
+      paint(targetCtx, x, y, 106, 74, "rgba(230, 237, 250, 0.2)");
+      targetCtx.strokeStyle = "rgba(225, 234, 252, 0.45)";
+      targetCtx.strokeRect(x + 0.5, y + 0.5, 105, 73);
+
+      targetCtx.fillStyle = "#d5e6ff";
+      targetCtx.font = '700 9px "Trebuchet MS", "Segoe UI", sans-serif';
+      targetCtx.textAlign = "center";
+      targetCtx.textBaseline = "alphabetic";
+      targetCtx.fillText(label, x + 53, y + 12);
+
+      paint(targetCtx, x + 34, y + 22, 38, 30, "#f5f5f7");
+      targetCtx.strokeStyle = "rgba(47, 56, 78, 0.35)";
+      targetCtx.strokeRect(x + 34.5, y + 22.5, 37, 29);
+      paint(targetCtx, x + 35, y + 31, 36, 20, liquidColor);
+      paint(targetCtx, x + 35, y + 27, 36, 5, foamColor);
+      paint(targetCtx, x + 72, y + 30, 8, 13, "#f5f5f7");
+      targetCtx.strokeRect(x + 72.5, y + 30.5, 7, 12);
+
+      if (style.topping >= 0) {
+        if (style.topping === 0) {
+          paint(targetCtx, x + 47, y + 27, 2, 2, "#9b6a3d");
+          paint(targetCtx, x + 54, y + 29, 2, 2, "#9b6a3d");
+          paint(targetCtx, x + 60, y + 26, 2, 2, "#9b6a3d");
+        } else if (style.topping === 1) {
+          paint(targetCtx, x + 47, y + 27, 3, 3, "#5f3b23");
+          paint(targetCtx, x + 54, y + 29, 3, 3, "#5f3b23");
+          paint(targetCtx, x + 61, y + 27, 3, 3, "#5f3b23");
+        } else {
+          paint(targetCtx, x + 47, y + 26, 16, 4, "#ffffff");
+        }
+      }
+
+      targetCtx.fillStyle = "#deebff";
+      targetCtx.font = '9px "Trebuchet MS", "Segoe UI", sans-serif';
+      targetCtx.textAlign = "left";
+      const beanLabel = style.bean >= 0 && order.steps[0] ? order.steps[0].options[style.bean] : "-";
+      const milkLabel = style.milk >= 0 && order.steps[1] ? order.steps[1].options[style.milk] : "-";
+      targetCtx.fillText(`Çekirdek: ${beanLabel}`, x + 6, y + 58);
+      targetCtx.fillText(`Süt: ${milkLabel}`, x + 6, y + 68);
+    }
+
+    function drawCafeMiniGameOverlay(targetCtx, now) {
+      if (worldState.mode !== "cafe" || !worldState.cafe || !worldState.cafe.game) {
+        return;
+      }
+      const game = worldState.cafe.game;
+      if (!game.active && !game.introOpen) {
+        return;
+      }
+
+      if (game.introOpen && !game.active) {
+        const guide = { x: 34, y: 28, w: worldCanvas.width - 68, h: 214 };
+        paint(targetCtx, 0, 0, worldCanvas.width, worldCanvas.height, "rgba(16,22,30,0.76)");
+        paint(targetCtx, guide.x, guide.y, guide.w, guide.h, "rgba(245, 238, 225, 0.98)");
+        targetCtx.strokeStyle = "rgba(56, 44, 34, 0.72)";
+        targetCtx.strokeRect(guide.x + 0.5, guide.y + 0.5, guide.w - 1, guide.h - 1);
+
+        targetCtx.fillStyle = "#2d1f16";
+        targetCtx.textAlign = "left";
+        targetCtx.textBaseline = "alphabetic";
+        targetCtx.font = '700 13px "Trebuchet MS", "Segoe UI", sans-serif';
+        targetCtx.fillText("Barista Rehberi", guide.x + 12, guide.y + 22);
+        targetCtx.font = '10px "Trebuchet MS", "Segoe UI", sans-serif';
+        targetCtx.fillText("Amaç: Müşterinin istediği kahveyi doğru adımlarla hazırlamak.", guide.x + 12, guide.y + 40);
+        targetCtx.fillText("1. Sağ üstteki Hedef Kahve kartını takip et.", guide.x + 12, guide.y + 58);
+        targetCtx.fillText("2. Her adımda seçeneklerden birini 1/2/3 ile seç.", guide.x + 12, guide.y + 74);
+        targetCtx.fillText("3. Yanlış seçim veya süre bitimi siparişi bozar.", guide.x + 12, guide.y + 90);
+        targetCtx.fillText("4. Doğru siparişlerde puan ve yıldız kazanırsın.", guide.x + 12, guide.y + 106);
+        targetCtx.fillText("5. Q ile mini oyundan çıkabilirsin.", guide.x + 12, guide.y + 122);
+
+        paint(targetCtx, guide.x + 12, guide.y + 138, guide.w - 24, 38, "#e7d7bf");
+        targetCtx.fillStyle = "#3b2a1f";
+        targetCtx.font = '700 10px "Trebuchet MS", "Segoe UI", sans-serif';
+        targetCtx.fillText("Hazırsan baristanın yanında E tuşuna bas ve oyunu başlat.", guide.x + 22, guide.y + 160);
+        targetCtx.fillStyle = "#654732";
+        targetCtx.font = '10px "Trebuchet MS", "Segoe UI", sans-serif';
+        targetCtx.fillText("İpucu: Önce sipariş adımlarını oku, sonra seçimi yap.", guide.x + 22, guide.y + 173);
+
+        paint(targetCtx, guide.x + 12, guide.y + 184, 96, 22, "#d3e8d7");
+        paint(targetCtx, guide.x + 118, guide.y + 184, 120, 22, "#eed4d4");
+        targetCtx.strokeStyle = "rgba(56, 44, 34, 0.55)";
+        targetCtx.strokeRect(guide.x + 12.5, guide.y + 184.5, 95, 21);
+        targetCtx.strokeRect(guide.x + 118.5, guide.y + 184.5, 119, 21);
+        targetCtx.fillStyle = "#2c2520";
+        targetCtx.textAlign = "center";
+        targetCtx.textBaseline = "middle";
+        targetCtx.fillText("E: Başlat", guide.x + 60, guide.y + 195);
+        targetCtx.fillText("Q: Vazgeç", guide.x + 178, guide.y + 195);
+        return;
+      }
+
+      const order = game.currentOrder;
+      if (!order) {
+        return;
+      }
+
+      const panel = {
+        x: 10,
+        y: 10,
+        w: worldCanvas.width - 20,
+        h: 170
+      };
+      paint(targetCtx, panel.x, panel.y, panel.w, panel.h, "rgba(16, 25, 36, 0.88)");
+      targetCtx.strokeStyle = "rgba(224, 235, 255, 0.5)";
+      targetCtx.strokeRect(panel.x + 0.5, panel.y + 0.5, panel.w - 1, panel.h - 1);
+
+      const timeLeftMs = Math.max(0, game.orderEndAt - now);
+      const timeLeftSec = Math.ceil(timeLeftMs / 1000);
+      const maxDuration = getCafeOrderDurationMs();
+      const timeRatio = Math.max(0, Math.min(1, timeLeftMs / maxDuration));
+      const currentStep = order.steps[order.stepIndex];
+
+      targetCtx.textAlign = "left";
+      targetCtx.textBaseline = "alphabetic";
+      targetCtx.fillStyle = "#f1f6ff";
+      targetCtx.font = '700 11px "Trebuchet MS", "Segoe UI", sans-serif';
+      targetCtx.fillText("BARISTA MİNİ OYUNU", panel.x + 10, panel.y + 16);
+      targetCtx.font = '10px "Trebuchet MS", "Segoe UI", sans-serif';
+      targetCtx.fillText(`Müşteri: ${order.customerName}  •  Sipariş: ${order.recipeLabel}`, panel.x + 10, panel.y + 31);
+      targetCtx.fillText(`Skor: ${game.score}  •  Servis: ${game.served}  •  Seri: ${game.streak}  •  Hata: ${game.misses}`, panel.x + 10, panel.y + 45);
+      if (game.lastResult) {
+        targetCtx.fillStyle = game.lastResult.startsWith("Doğru") ? "#9fe2ba" : "#ffd7b1";
+        targetCtx.fillText(game.lastResult, panel.x + 10, panel.y + 59);
+      }
+
+      paint(targetCtx, panel.x + 10, panel.y + 66, 210, 55, "rgba(231, 217, 189, 0.18)");
+      targetCtx.strokeStyle = "rgba(227, 215, 188, 0.38)";
+      targetCtx.strokeRect(panel.x + 10.5, panel.y + 66.5, 209, 54);
+      targetCtx.fillStyle = "#ffeac5";
+      targetCtx.font = '700 10px "Trebuchet MS", "Segoe UI", sans-serif';
+      targetCtx.fillText("İstenen Tarif", panel.x + 18, panel.y + 78);
+      targetCtx.font = '9px "Trebuchet MS", "Segoe UI", sans-serif';
+      const step1 = order.steps[0] ? `${order.steps[0].prompt}: ${order.targetLabels[0]}` : "-";
+      const step2 = order.steps[1] ? `${order.steps[1].prompt}: ${order.targetLabels[1]}` : "-";
+      const step3 = order.steps[2] ? `${order.steps[2].prompt}: ${order.targetLabels[2]}` : "-";
+      targetCtx.fillText(`1) ${step1}`, panel.x + 18, panel.y + 92);
+      targetCtx.fillText(`2) ${step2}`, panel.x + 18, panel.y + 104);
+      targetCtx.fillText(`3) ${step3}`, panel.x + 18, panel.y + 116);
+
+      const targetStyle = getCafeCupStyle(order, false);
+      const preparedStyle = getCafeCupStyle(order, true);
+      drawCafeCupPreview(targetCtx, panel.x + 230, panel.y + 14, targetStyle, "Hedef Kahve", order);
+      drawCafeCupPreview(targetCtx, panel.x + 344, panel.y + 14, preparedStyle, "Hazırlanan", order);
+
+      paint(targetCtx, panel.x + 230, panel.y + 92, 220, 8, "rgba(77, 94, 126, 0.56)");
+      paint(targetCtx, panel.x + 230, panel.y + 92, Math.round(220 * timeRatio), 8, timeRatio > 0.35 ? "#79c6a4" : "#df8f78");
+      targetCtx.fillStyle = "#e3efff";
+      targetCtx.font = '9px "Trebuchet MS", "Segoe UI", sans-serif';
+      targetCtx.fillText(`Kalan Süre: ${timeLeftSec}s`, panel.x + 230, panel.y + 109);
+
+      targetCtx.fillStyle = "#fff0cf";
+      targetCtx.font = '700 10px "Trebuchet MS", "Segoe UI", sans-serif';
+      targetCtx.fillText(`Aktif Adım ${order.stepIndex + 1}/${order.steps.length}: ${currentStep ? currentStep.prompt : "Sipariş tamamlandı"}`, panel.x + 10, panel.y + 136);
+
+      if (currentStep) {
+        const optionY = panel.y + 142;
+        const optionW = Math.floor((panel.w - 24) / 3);
+        for (let optionIndex = 0; optionIndex < 3; optionIndex += 1) {
+          const optionX = panel.x + 8 + optionIndex * (optionW + 4);
+          const pulse = (Math.sin(now / 180 + optionIndex * 0.8) + 1) / 2;
+          const tone = `rgba(120, 168, 229, ${0.3 + pulse * 0.16})`;
+          paint(targetCtx, optionX, optionY, optionW, 24, tone);
+          targetCtx.strokeStyle = "rgba(232, 243, 255, 0.58)";
+          targetCtx.strokeRect(optionX + 0.5, optionY + 0.5, optionW - 1, 23);
+          targetCtx.fillStyle = "#eff6ff";
+          targetCtx.font = '10px "Trebuchet MS", "Segoe UI", sans-serif';
+          targetCtx.fillText(`[${optionIndex + 1}] ${currentStep.options[optionIndex]}`, optionX + 8, optionY + 15.5);
+        }
+      }
+
+      targetCtx.fillStyle = "#d7e7ff";
+      targetCtx.font = '9px "Trebuchet MS", "Segoe UI", sans-serif';
+      targetCtx.fillText("Kontroller: 1/2/3 seçim  •  Q mini oyundan çıkış", panel.x + 10, panel.y + panel.h - 6);
+    }
+
     function getFashionShopTabIdFromPoint(screenX, screenY) {
       const layout = getFashionShopLayout();
       const tab = layout.tabs.find((entry) => isPointInRect(screenX, screenY, entry));
@@ -977,6 +1238,301 @@
       return isPointInRect(screenX, screenY, { x: panel.x, y: panel.y, w: panel.width, h: panel.height });
     }
 
+    function isPlayerNearZone(zone, extraReach = 28) {
+      if (!worldState.player || !zone) {
+        return false;
+      }
+      const zoneCenterX = zone.x + zone.w / 2;
+      const zoneCenterY = zone.y + zone.h / 2;
+      const reach = Math.max(zone.w, zone.h) / 2 + extraReach;
+      return Math.hypot(zoneCenterX - worldState.player.x, zoneCenterY - worldState.player.y) <= reach;
+    }
+
+    function getCafeSeatById(seatId) {
+      if (!seatId || !worldState.cafe || !Array.isArray(worldState.cafe.seats)) {
+        return null;
+      }
+      return worldState.cafe.seats.find((seat) => seat.id === seatId) || null;
+    }
+
+    function isPlayerSeatedInCafe() {
+      return worldState.mode === "cafe" && Boolean(worldState.cafe && worldState.cafe.seatedSeatId);
+    }
+
+    function getNearbyCafeSeat(maxDistance = 24) {
+      if (!worldState.player || !worldState.cafe || !Array.isArray(worldState.cafe.seats)) {
+        return null;
+      }
+      let nearestSeat = null;
+      let nearestDistance = 9999;
+
+      worldState.cafe.seats.forEach((seat) => {
+        const occupiedByOther = seat.occupiedBy && seat.id !== worldState.cafe.seatedSeatId;
+        if (occupiedByOther) {
+          return;
+        }
+        const distance = Math.hypot(seat.x - worldState.player.x, seat.y - worldState.player.y);
+        if (distance <= maxDistance && distance < nearestDistance) {
+          nearestSeat = seat;
+          nearestDistance = distance;
+        }
+      });
+
+      return nearestSeat;
+    }
+
+    function syncCafeSeatedPlayerPosition() {
+      if (!isPlayerSeatedInCafe() || !worldState.player) {
+        return;
+      }
+      const seat = getCafeSeatById(worldState.cafe.seatedSeatId);
+      if (!seat) {
+        worldState.cafe.seatedSeatId = null;
+        return;
+      }
+      worldState.player.x = seat.x;
+      worldState.player.y = seat.y + 8;
+    }
+
+    function standUpFromCafeSeat(showMessage = true) {
+      if (!worldState.player || !worldState.cafe || !worldState.cafe.seatedSeatId) {
+        return;
+      }
+      const seat = getCafeSeatById(worldState.cafe.seatedSeatId);
+      worldState.cafe.seatedSeatId = null;
+      if (!seat) {
+        return;
+      }
+      seat.occupiedBy = null;
+
+      const directionOffset = seat.direction === "n"
+        ? { x: 0, y: -16 }
+        : seat.direction === "s"
+          ? { x: 0, y: 16 }
+          : seat.direction === "w"
+            ? { x: -16, y: 0 }
+            : { x: 16, y: 0 };
+      const fallbackOffsets = [
+        directionOffset,
+        { x: 0, y: 16 },
+        { x: 0, y: -16 },
+        { x: 16, y: 0 },
+        { x: -16, y: 0 }
+      ];
+
+      let placed = false;
+      fallbackOffsets.forEach((offset) => {
+        if (placed) {
+          return;
+        }
+        const nextX = seat.x + offset.x;
+        const nextY = seat.y + offset.y;
+        if (!isWorldBlocked(getHitboxAt(nextX, nextY))) {
+          worldState.player.x = nextX;
+          worldState.player.y = nextY;
+          placed = true;
+        }
+      });
+      if (!placed) {
+        worldState.player.x = seat.x;
+        worldState.player.y = seat.y + 14;
+      }
+
+      if (showMessage) {
+        setWorldChat("Sandalyeden kalktın.", 1000);
+      }
+    }
+
+    function sitOnCafeSeat(seat) {
+      if (!worldState.player || !worldState.cafe || !seat) {
+        return false;
+      }
+      if (seat.occupiedBy && seat.id !== worldState.cafe.seatedSeatId) {
+        return false;
+      }
+
+      if (worldState.cafe.seatedSeatId && worldState.cafe.seatedSeatId !== seat.id) {
+        standUpFromCafeSeat(false);
+      }
+
+      seat.occupiedBy = worldState.player.name || "Miu";
+      worldState.cafe.seatedSeatId = seat.id;
+      syncCafeSeatedPlayerPosition();
+      clearMovementIntent();
+      setWorldChat("Sandalyeye oturdun. Kalkmak için E'ye bas.", 1300);
+      return true;
+    }
+
+    function getCafeOrderDurationMs() {
+      const served = worldState.cafe && worldState.cafe.game ? worldState.cafe.game.served : 0;
+      return Math.max(11000, 18000 - served * 450);
+    }
+
+    function createCafeOrder(now = performance.now()) {
+      const coffeeRecipes = CAFE_RECIPES.filter((recipe) => recipe.id === "coffee" || recipe.icon === "coffee");
+      const recipePool = coffeeRecipes.length > 0 ? coffeeRecipes : CAFE_RECIPES;
+      const recipe = pickRandom(recipePool);
+      const expectedChoices = recipe.steps.map((step) => randomInt(step.options.length));
+      const order = {
+        customerName: pickRandom(CAFE_CUSTOMER_NAMES),
+        recipeId: recipe.id,
+        recipeLabel: recipe.label,
+        steps: recipe.steps.map((step) => ({ prompt: step.prompt, options: [...step.options] })),
+        expectedChoices,
+        targetLabels: recipe.steps.map((step, stepIndex) => step.options[expectedChoices[stepIndex]]),
+        selectedChoices: [],
+        stepIndex: 0,
+        createdAt: now
+      };
+      worldState.cafe.game.currentOrder = order;
+      worldState.cafe.game.orderEndAt = now + getCafeOrderDurationMs();
+      return order;
+    }
+
+    function beginCafeMiniGame() {
+      if (!worldState.cafe || !worldState.cafe.game) {
+        return;
+      }
+      const game = worldState.cafe.game;
+      game.introOpen = false;
+      if (game.active) {
+        setWorldChat("Kahve oyunu zaten açık. 1-2-3 ile devam et, Q ile çık.", 1400);
+        return;
+      }
+
+      if (isPlayerSeatedInCafe()) {
+        standUpFromCafeSeat(false);
+      }
+
+      clearMovementIntent();
+      game.active = true;
+      game.score = 0;
+      game.served = 0;
+      game.streak = 0;
+      game.misses = 0;
+      game.lastResult = "";
+      createCafeOrder(performance.now());
+      game.tutorialShown = true;
+      setWorldChat("Sipariş alındı. İstenen tarifi takip ederek 1/2/3 ile hazırla!", 2200);
+    }
+
+    function startCafeMiniGame() {
+      if (!worldState.cafe || !worldState.cafe.game) {
+        return;
+      }
+      const game = worldState.cafe.game;
+      if (game.active) {
+        setWorldChat("Kahve oyunu zaten açık. 1-2-3 ile devam et, Q ile çık.", 1400);
+        return;
+      }
+      if (isPlayerSeatedInCafe()) {
+        standUpFromCafeSeat(false);
+      }
+      clearMovementIntent();
+      game.introOpen = true;
+      setWorldChat("Barista rehberi açıldı. Oku ve hazır olunca E ile başlat.", 2000);
+    }
+
+    function updateCafeMiniGame(now) {
+      if (worldState.mode !== "cafe" || !worldState.cafe || !worldState.cafe.game || !worldState.cafe.game.active) {
+        return;
+      }
+      const game = worldState.cafe.game;
+      if (!game.currentOrder) {
+        createCafeOrder(now);
+        return;
+      }
+      if (now < game.orderEndAt) {
+        return;
+      }
+      game.misses += 1;
+      game.streak = 0;
+      game.score = Math.max(0, game.score - 4);
+      game.lastResult = "Süre doldu: Sipariş yenilendi.";
+      setWorldChat("Siparişin süresi doldu. Yeni müşteri alındı.", 1400);
+      createCafeOrder(now);
+    }
+
+    function isPlayerNearCafeBarista() {
+      if (!worldState.player || !worldState.cafe || !worldState.cafe.barista) {
+        return false;
+      }
+      const barista = worldState.cafe.barista;
+      if (Math.hypot(barista.x - worldState.player.x, barista.y - worldState.player.y) < 56) {
+        return true;
+      }
+      return isPlayerNearZone(worldState.cafe.counterZone, 34);
+    }
+
+    function enterCafe() {
+      if (!worldState.player) {
+        return;
+      }
+      if (!worldState.cafe.barista) {
+        worldState.cafe.barista = buildCafeBarista();
+      }
+      populateCafeSeats();
+      worldState.cafe.game.active = false;
+      worldState.cafe.game.introOpen = false;
+      worldState.cafe.game.currentOrder = null;
+      worldState.cafe.game.orderEndAt = 0;
+      worldState.cafe.seatedSeatId = null;
+      worldState.cafe.previousWorldPosition = { x: worldState.player.x, y: worldState.player.y };
+      worldState.mode = "cafe";
+      worldState.player.x = worldState.cafe.entryPoint.x;
+      worldState.player.y = worldState.cafe.entryPoint.y;
+      worldTitleText.textContent = "Miu Kafe";
+      clearMovementIntent();
+      updateWorldCamera();
+      setWorldChat("Miu Kafe'ye giriş yaptın.", 1400);
+    }
+
+    function exitCafe() {
+      if (!worldState.player) {
+        return;
+      }
+      standUpFromCafeSeat(false);
+      stopCafeMiniGame(false);
+      const fallback = { x: 168, y: 214 };
+      const previous = worldState.cafe.previousWorldPosition || fallback;
+      worldState.mode = "square";
+      worldState.player.x = previous.x;
+      worldState.player.y = previous.y;
+      worldTitleText.textContent = getWorldById("miu-square").name;
+      worldState.mouse.active = false;
+      updateWorldCamera();
+      setWorldChat("Kafeden meydana döndün.", 1300);
+    }
+
+    function enterClub() {
+      if (!worldState.player) {
+        return;
+      }
+      worldState.club.previousWorldPosition = { x: worldState.player.x, y: worldState.player.y };
+      worldState.mode = "club";
+      worldState.player.x = worldState.club.entryPoint.x;
+      worldState.player.y = worldState.club.entryPoint.y;
+      worldTitleText.textContent = "Sahne Kulübü";
+      worldState.mouse.active = false;
+      updateWorldCamera();
+      setWorldChat("Sahne Kulübü'ne giriş yaptın.", 1400);
+    }
+
+    function exitClub() {
+      if (!worldState.player) {
+        return;
+      }
+      const fallback = { x: 690, y: 510 };
+      const previous = worldState.club.previousWorldPosition || fallback;
+      worldState.mode = "square";
+      worldState.player.x = previous.x;
+      worldState.player.y = previous.y;
+      worldTitleText.textContent = getWorldById("miu-square").name;
+      worldState.mouse.active = false;
+      updateWorldCamera();
+      setWorldChat("Kulüpten meydana döndün.", 1300);
+    }
+
     function enterTownHall() {
       if (!worldState.player) {
         return;
@@ -1013,7 +1569,10 @@
       if (worldState.mode === "hall") {
         return worldState.hall.interactables || [];
       }
-      return worldState.interactables;
+      if (worldState.mode === "square") {
+        return worldState.interactables;
+      }
+      return [];
     }
 
     function getNearbyTownHallNpc() {
@@ -1047,6 +1606,69 @@
     function interactInWorld() {
       if (isFashionShopOpen()) { closeFashionShop(); return; }
 
+      if (worldState.mode === "cafe") {
+        if (worldState.cafe.game.introOpen) {
+          if (isPlayerNearZone(worldState.cafe.exitZone, 28)) {
+            exitCafe();
+            return;
+          }
+          if (isPlayerNearCafeBarista()) {
+            beginCafeMiniGame();
+            return;
+          }
+          setWorldChat("Rehberi onaylamak için baristanın yanında E'ye bas.", 1300);
+          return;
+        }
+
+        if (worldState.cafe.game.active) {
+          if (isPlayerNearZone(worldState.cafe.exitZone, 28)) {
+            exitCafe();
+            return;
+          }
+          setWorldChat("Kahve oyunu aktif: 1/2/3 ile seçim yap, Q ile çık.", 1300);
+          return;
+        }
+        if (isPlayerNearZone(worldState.cafe.exitZone, 28)) {
+          exitCafe();
+          return;
+        }
+        if (isPlayerNearCafeBarista()) {
+          startCafeMiniGame();
+          return;
+        }
+
+        const nearbySeat = getNearbyCafeSeat();
+        if (nearbySeat) {
+          if (worldState.cafe.seatedSeatId === nearbySeat.id) {
+            standUpFromCafeSeat();
+          } else {
+            sitOnCafeSeat(nearbySeat);
+          }
+          return;
+        }
+
+        if (isPlayerSeatedInCafe()) {
+          standUpFromCafeSeat();
+          return;
+        }
+
+        setWorldChat("Kafede etkileşim için barista, sandalye veya çıkış kapısına yaklaş.", 1300);
+        return;
+      }
+
+      if (worldState.mode === "club") {
+        if (isPlayerNearZone(worldState.club.exitZone, 28)) {
+          exitClub();
+          return;
+        }
+        if (isPlayerNearZone(worldState.club.danceZone, 26)) {
+          setWorldChat("DJ: Ritim oyunu yakında burada başlayacak.", 1700);
+          return;
+        }
+        setWorldChat("Kulüpte etkileşim için dans pisti veya çıkışa yaklaş.", 1300);
+        return;
+      }
+
       if (worldState.mode === "hall") {
         const nearbyHallNpc = getNearbyTownHallNpc();
         if (nearbyHallNpc) {
@@ -1075,8 +1697,10 @@
 
       const interactable = getNearbyInteractable();
       if (!interactable) { setWorldChat("Yakında etkileşime girecek bir şey yok.", 1200); return; }
+      if (interactable.id === "cafe") { enterCafe(); return; }
       if (interactable.id === "fashion-shop") { openFashionShop(); return; }
       if (interactable.id === "town-hall") { enterTownHall(); return; }
+      if (interactable.id === "stage-club") { enterClub(); return; }
       if (interactable.id === "daily-gift") {
         if (worldState.dailyGiftClaimed) { setWorldChat("Günlük ödülünü aldın.", 1200); return; }
         worldState.dailyGiftClaimed = true;
@@ -1188,6 +1812,10 @@
 
     function updatePlayerMovement(dt) {
       if (!worldState.player || isFashionShopOpen()) { return; }
+      if (worldState.mode === "cafe" && worldState.cafe && (worldState.cafe.seatedSeatId || worldState.cafe.game.introOpen)) {
+        worldState.mouse.active = false;
+        return;
+      }
       let keyX = (worldState.keys.right ? 1 : 0) - (worldState.keys.left ? 1 : 0);
       let keyY = (worldState.keys.down ? 1 : 0) - (worldState.keys.up ? 1 : 0);
       if (keyX !== 0 || keyY !== 0) {
@@ -1286,12 +1914,28 @@
 
     function updateWorldStatus() {
       if (!worldState.player) { return; }
-      const zoneName = worldState.mode === "hall" ? "Meydan Holü" : getCurrentZoneName(worldState.player.x, worldState.player.y);
+      const zoneName = worldState.mode === "hall"
+        ? "Meydan Holü"
+        : worldState.mode === "cafe"
+          ? "Miu Kafe"
+          : worldState.mode === "club"
+            ? "Sahne Kulübü"
+            : getCurrentZoneName(worldState.player.x, worldState.player.y);
       worldState.currentZoneName = zoneName;
       const worldInfo = getWorldById("miu-square");
       const eventTitle = worldState.mode === "hall"
         ? "Sahne Hazırlığı"
-        : getEventTitle();
+        : worldState.mode === "cafe"
+          ? (worldState.cafe.game.introOpen
+            ? "Barista Rehberi"
+            : worldState.cafe.game.active
+              ? "Kahve Servisi"
+              : worldState.cafe.seatedSeatId
+                ? "Kafe Molası"
+                : "Kafe Buluşması")
+          : worldState.mode === "club"
+            ? "Dans Provası"
+            : getEventTitle();
       const outfit = getEquippedFashionLabel("outfit");
       const accessory = getEquippedFashionLabel("accessory");
       const shoe = getEquippedFashionLabel("shoe");
@@ -1301,6 +1945,26 @@
     function updateWorldHint() {
       if (isFashionShopOpen()) {
         worldHelpText.textContent = "Moda mağazası açık: kategori seç, ürüne tıkla, Satın Al/Kuşan ile onayla. Q/Esc ile kapat.";
+        return;
+      }
+      if (worldState.mode === "cafe") {
+        if (worldState.cafe && worldState.cafe.game && worldState.cafe.game.introOpen) {
+          worldHelpText.textContent = "Barista Rehberi: Metni oku. E ile oyunu başlat, Q ile iptal et.";
+          return;
+        }
+        if (worldState.cafe && worldState.cafe.game && worldState.cafe.game.active) {
+          worldHelpText.textContent = "Kahve Oyunu: 1/2/3 ile adım seç, Q ile mini oyundan çık.";
+          return;
+        }
+        if (isPlayerSeatedInCafe()) {
+          worldHelpText.textContent = "Miu Kafe: Şu an oturuyorsun. E ile sandalyeden kalkabilirsin.";
+          return;
+        }
+        worldHelpText.textContent = "Miu Kafe: WASD/mouse ile dolaş, E ile barista, sandalye veya çıkış kapısını kullan.";
+        return;
+      }
+      if (worldState.mode === "club") {
+        worldHelpText.textContent = "Sahne Kulübü: WASD/mouse ile dolaş, E ile dans pisti veya çıkışı kullan.";
         return;
       }
       if (worldState.mode === "hall") {
@@ -1494,6 +2158,162 @@
       });
     }
 
+    function drawCafeMap(now) {
+      const cafe = worldState.cafe;
+      paint(worldCtx, 0, 0, cafe.width, cafe.height, "#f4eadb");
+      paint(worldCtx, 0, 42, cafe.width, cafe.height - 42, "#efe3d2");
+      paint(worldCtx, 0, cafe.height - 34, cafe.width, 34, "#c0ad91");
+      paint(worldCtx, 0, 0, cafe.width, 20, "#9c7654");
+      paint(worldCtx, 0, 20, cafe.width, 14, "#d8b58f");
+
+      paint(worldCtx, 440, 72, 168, 62, "#b48561");
+      paint(worldCtx, 448, 80, 152, 46, "#d0a27e");
+      paint(worldCtx, 524, 136, 84, 58, "#9c7253");
+      paint(worldCtx, 532, 146, 26, 15, "#f1dfc8");
+      paint(worldCtx, 558, 148, 10, 6, "#2e3d48");
+      paint(worldCtx, 571, 145, 24, 18, "#8b6548");
+      paint(worldCtx, 575, 149, 8, 8, "#d2edf4");
+      drawMapLabel(522, 62, "Kasa & Barista", {
+        background: "rgba(255, 248, 232, 0.92)"
+      });
+
+      (cafe.tables || []).forEach((table, index) => {
+        const pulse = (Math.sin(now / 260 + index) + 1) / 2;
+        worldCtx.fillStyle = index % 2 === 0 ? "#c69571" : "#b9855f";
+        worldCtx.beginPath();
+        worldCtx.ellipse(table.x, table.y, 22, 14, 0, 0, Math.PI * 2);
+        worldCtx.fill();
+        worldCtx.fillStyle = `rgba(255, 238, 212, ${0.42 + pulse * 0.25})`;
+        worldCtx.beginPath();
+        worldCtx.ellipse(table.x, table.y - 1, 16, 8, 0, 0, Math.PI * 2);
+        worldCtx.fill();
+      });
+
+      (cafe.seats || []).forEach((seat) => {
+        const isPlayerSeat = seat.id === cafe.seatedSeatId;
+        const seatColor = isPlayerSeat ? "#5f8fcb" : seat.occupiedBy ? "#7f945a" : "#8c6b50";
+        paint(worldCtx, seat.x - 6, seat.y - 5, 12, 10, seatColor);
+        if (seat.occupiedBy) {
+          const headColor = isPlayerSeat ? "#d8efff" : "#f8d8b3";
+          paint(worldCtx, seat.x - 2, seat.y - 8, 4, 4, headColor);
+        }
+      });
+
+      drawMapLabel(306, 116, "Masa ve Oturma Alanı", {
+        background: "rgba(255, 248, 232, 0.88)"
+      });
+
+      const barista = cafe.barista;
+      if (barista) {
+        drawMapLabel(barista.x, barista.y - 42, `${barista.name} • Barista`, {
+          background: "rgba(255, 245, 230, 0.9)"
+        });
+      }
+
+      paint(worldCtx, cafe.exitZone.x, cafe.exitZone.y, cafe.exitZone.w, cafe.exitZone.h, "#8ac7a0");
+      drawMapLabel(cafe.exitZone.x + cafe.exitZone.w / 2, cafe.exitZone.y - 8, "Meydana Çıkış", {
+        background: "rgba(245, 255, 248, 0.9)"
+      });
+
+      worldCtx.font = '700 8px "Trebuchet MS", "Segoe UI", sans-serif';
+      worldCtx.textAlign = "center";
+      worldCtx.textBaseline = "middle";
+
+      const pulseExit = (Math.sin(now / 220) + 1) / 2;
+      const exitMarkerW = 16;
+      const exitMarkerH = 12;
+      const exitMarkerX = Math.round(cafe.exitZone.x + cafe.exitZone.w / 2 - exitMarkerW / 2);
+      const exitMarkerY = Math.round(cafe.exitZone.y + cafe.exitZone.h / 2 - exitMarkerH / 2);
+      paint(worldCtx, exitMarkerX, exitMarkerY, exitMarkerW, exitMarkerH, "rgba(118, 198, 160, 0.82)");
+      worldCtx.strokeStyle = `rgba(33, 28, 24, ${0.5 + pulseExit * 0.35})`;
+      worldCtx.strokeRect(exitMarkerX + 0.5, exitMarkerY + 0.5, exitMarkerW - 1, exitMarkerH - 1);
+      worldCtx.fillStyle = "#fff8ec";
+      worldCtx.fillText("E", exitMarkerX + exitMarkerW / 2, exitMarkerY + exitMarkerH / 2 + 0.5);
+
+      const pulseCounter = (Math.sin(now / 210 + 0.6) + 1) / 2;
+      const counterMarkerW = 16;
+      const counterMarkerH = 12;
+      const counterMarkerX = Math.round(cafe.counterZone.x + cafe.counterZone.w / 2 - counterMarkerW / 2);
+      const counterMarkerY = Math.round(cafe.counterZone.y + cafe.counterZone.h - counterMarkerH / 2 - 2);
+      const counterTone = cafe.game.active ? "rgba(123, 174, 240, 0.86)" : "rgba(228, 152, 112, 0.84)";
+      paint(worldCtx, counterMarkerX, counterMarkerY, counterMarkerW, counterMarkerH, counterTone);
+      worldCtx.strokeStyle = `rgba(33, 28, 24, ${0.5 + pulseCounter * 0.35})`;
+      worldCtx.strokeRect(counterMarkerX + 0.5, counterMarkerY + 0.5, counterMarkerW - 1, counterMarkerH - 1);
+      worldCtx.fillStyle = "#fff8ec";
+      worldCtx.fillText("E", counterMarkerX + counterMarkerW / 2, counterMarkerY + counterMarkerH / 2 + 0.5);
+      const counterLabel = cafe.game.active
+        ? "Sipariş Aktif"
+        : cafe.game.introOpen
+          ? "Rehber Açık"
+          : "Barista ile Konuş";
+      drawMapLabel(cafe.counterZone.x + cafe.counterZone.w / 2, cafe.counterZone.y - 8, counterLabel, {
+        background: "rgba(255, 248, 232, 0.9)"
+      });
+
+      if (!cafe.game.active && !cafe.game.introOpen) {
+        const seatHint = getNearbyCafeSeat();
+        if (seatHint) {
+          const seatPulse = (Math.sin(now / 210 + 1.2) + 1) / 2;
+          const seatMarkerX = Math.round(seatHint.x - 8);
+          const seatMarkerY = Math.round(seatHint.y - 18);
+          paint(worldCtx, seatMarkerX, seatMarkerY, 16, 12, "rgba(131, 159, 213, 0.84)");
+          worldCtx.strokeStyle = `rgba(33, 28, 24, ${0.46 + seatPulse * 0.36})`;
+          worldCtx.strokeRect(seatMarkerX + 0.5, seatMarkerY + 0.5, 15, 11);
+          worldCtx.fillStyle = "#fff8ec";
+          worldCtx.fillText("E", seatHint.x, seatMarkerY + 6.5);
+          drawMapLabel(seatHint.x, seatMarkerY - 6, seatHint.id === cafe.seatedSeatId ? "Kalk" : "Otur", {
+            background: "rgba(246, 248, 255, 0.9)"
+          });
+        }
+      }
+    }
+
+    function drawClubMap(now) {
+      const club = worldState.club;
+      paint(worldCtx, 0, 0, club.width, club.height, "#1d2030");
+      paint(worldCtx, 0, 0, club.width, 28, "#2c3148");
+      paint(worldCtx, 0, 96, club.width, club.height - 96, "#25283a");
+      paint(worldCtx, 0, club.height - 32, club.width, 32, "#353048");
+
+      paint(worldCtx, club.boothZone.x, club.boothZone.y, club.boothZone.w, club.boothZone.h, "#4f587e");
+      paint(worldCtx, club.boothZone.x + 10, club.boothZone.y + 12, club.boothZone.w - 20, club.boothZone.h - 24, "#7a86c5");
+      drawMapLabel(club.boothZone.x + club.boothZone.w / 2, club.boothZone.y - 8, "DJ Kabini", {
+        background: "rgba(240, 244, 255, 0.86)"
+      });
+
+      paint(worldCtx, club.danceZone.x, club.danceZone.y, club.danceZone.w, club.danceZone.h, "#34406a");
+      for (let i = 0; i < 6; i += 1) {
+        const alpha = 0.2 + ((Math.sin(now / 220 + i * 0.8) + 1) / 2) * 0.22;
+        paint(worldCtx, club.danceZone.x + 12 + i * 40, club.danceZone.y + 14, 18, club.danceZone.h - 28, `rgba(130, 188, 255, ${alpha})`);
+      }
+      drawMapLabel(club.danceZone.x + club.danceZone.w / 2, club.danceZone.y - 8, "Dans Pisti", {
+        background: "rgba(238, 242, 255, 0.88)"
+      });
+
+      (club.seats || []).forEach((seat) => {
+        paint(worldCtx, seat.x - 9, seat.y - 8, 18, 16, "#4e5166");
+      });
+
+      paint(worldCtx, club.exitZone.x, club.exitZone.y, club.exitZone.w, club.exitZone.h, "#8ac7a0");
+      drawMapLabel(club.exitZone.x + club.exitZone.w / 2, club.exitZone.y - 8, "Meydana Çıkış", {
+        background: "rgba(245, 255, 248, 0.9)"
+      });
+
+      const pulse = (Math.sin(now / 220 + 0.6) + 1) / 2;
+      const markerW = 16;
+      const markerH = 12;
+      const markerX = Math.round(club.exitZone.x + club.exitZone.w / 2 - markerW / 2);
+      const markerY = Math.round(club.exitZone.y + club.exitZone.h / 2 - markerH / 2);
+      paint(worldCtx, markerX, markerY, markerW, markerH, "rgba(118, 198, 160, 0.82)");
+      worldCtx.strokeStyle = `rgba(33, 28, 24, ${0.5 + pulse * 0.35})`;
+      worldCtx.strokeRect(markerX + 0.5, markerY + 0.5, markerW - 1, markerH - 1);
+      worldCtx.fillStyle = "#fff8ec";
+      worldCtx.font = '700 8px "Trebuchet MS", "Segoe UI", sans-serif';
+      worldCtx.textAlign = "center";
+      worldCtx.textBaseline = "middle";
+      worldCtx.fillText("E", markerX + markerW / 2, markerY + markerH / 2 + 0.5);
+    }
+
     function drawTownHallMap(now) {
       const hall = worldState.hall;
       paint(worldCtx, 0, 0, hall.width, hall.height, "#e0d4c1");
@@ -1557,6 +2377,14 @@
     }
 
     function drawMap(now) {
+      if (worldState.mode === "cafe") {
+        drawCafeMap(now);
+        return;
+      }
+      if (worldState.mode === "club") {
+        drawClubMap(now);
+        return;
+      }
       if (worldState.mode === "hall") {
         drawTownHallMap(now);
         return;
@@ -1697,9 +2525,14 @@
       worldCtx.clearRect(0, 0, worldCanvas.width, worldCanvas.height);
       worldCtx.translate(-cameraX, -cameraY);
       drawMap(now);
-      const entities = worldState.mode === "hall"
-        ? [...(worldState.hall.npcs || [])]
-        : [...worldState.npcs];
+      let entities = [];
+      if (worldState.mode === "hall") {
+        entities = [...(worldState.hall.npcs || [])];
+      } else if (worldState.mode === "square") {
+        entities = [...worldState.npcs];
+      } else if (worldState.mode === "cafe" && worldState.cafe.barista) {
+        entities = [worldState.cafe.barista];
+      }
       if (worldState.player) {
         entities.push(worldState.player);
       }
@@ -1707,12 +2540,15 @@
       entities.forEach((entity) => drawCharacter(entity, entity === worldState.player));
       worldCtx.restore();
       drawFashionShopOverlay(worldCtx);
+      drawCafeMiniGameOverlay(worldCtx, now);
     }
 
     function updateWorldFrame(dt, now) {
       updatePlayerMovement(dt);
+      syncCafeSeatedPlayerPosition();
       updateNpcMovement(dt, now);
       updateTownHallNpcMovement(dt, now);
+      updateCafeMiniGame(now);
       updateSquareCollectibles(now);
       updateWorldCamera();
       updateWorldStatus();
@@ -1753,8 +2589,87 @@
       if (worldState.rafId) { cancelAnimationFrame(worldState.rafId); worldState.rafId = null; }
     }
 
-    function resolveCafeGameChoice() {}
-    function stopCafeMiniGame(showMessage = true) { worldState.cafe.game.active = false; if (showMessage) { setWorldChat("Kafe oyunundan çıktın.", 1000); } }
+    function resolveCafeGameChoice(choiceIndex) {
+      if (worldState.mode !== "cafe" || !worldState.cafe || !worldState.cafe.game.active) {
+        return;
+      }
+      const game = worldState.cafe.game;
+      if (!game.currentOrder) {
+        createCafeOrder(performance.now());
+      }
+      const order = game.currentOrder;
+      if (!order) {
+        return;
+      }
+      const step = order.steps[order.stepIndex];
+      if (!step) {
+        return;
+      }
+      if (choiceIndex < 0 || choiceIndex >= step.options.length) {
+        return;
+      }
+
+      const expectedChoice = order.expectedChoices[order.stepIndex];
+      if (choiceIndex !== expectedChoice) {
+        game.misses += 1;
+        game.streak = 0;
+        game.score = Math.max(0, game.score - 3);
+        const expectedLabel = step.options[expectedChoice];
+        game.lastResult = `Yanlış seçim: Doğrusu "${expectedLabel}" olmalıydı.`;
+        setWorldChat(`${order.customerName}: Bu seçim tutmadı, yeni sipariş alalım.`, 1500);
+        createCafeOrder(performance.now());
+        return;
+      }
+
+      order.selectedChoices.push(choiceIndex);
+      order.stepIndex += 1;
+      game.lastResult = `Doğru seçim: ${step.options[choiceIndex]}`;
+
+      if (order.stepIndex < order.steps.length) {
+        const nextStep = order.steps[order.stepIndex];
+        setWorldChat(`Doğru seçim! Sıradaki adım: ${nextStep.prompt}`, 1200);
+        return;
+      }
+
+      game.served += 1;
+      game.streak += 1;
+      const scoreGain = 10 + Math.min(12, game.streak * 2);
+      const starReward = 1 + Math.min(2, Math.floor(game.streak / 3));
+      game.score += scoreGain;
+      worldState.partyStars += starReward;
+      game.lastResult = `Sipariş tamamlandı! +${scoreGain} puan, +${starReward} yıldız`;
+
+      setWorldChat(`${order.customerName}: Mükemmel! +${scoreGain} puan, +${starReward} yıldız.`, 1900);
+      createCafeOrder(performance.now());
+    }
+
+    function stopCafeMiniGame(showMessage = true) {
+      if (!worldState.cafe || !worldState.cafe.game) {
+        return;
+      }
+      const game = worldState.cafe.game;
+      const played = game.active;
+      const inGuide = game.introOpen;
+      game.active = false;
+      game.introOpen = false;
+      game.currentOrder = null;
+      game.orderEndAt = 0;
+      game.lastResult = "";
+      clearMovementIntent();
+
+      if (!showMessage) {
+        return;
+      }
+      if (inGuide && !played) {
+        setWorldChat("Barista rehberi kapatıldı.", 1100);
+        return;
+      }
+      if (!played) {
+        setWorldChat("Kafe mini oyunu kapalı.", 1000);
+        return;
+      }
+      setWorldChat(`Kafe oyunundan çıktın. Skor: ${game.score}, servis: ${game.served}.`, 1400);
+    }
     function resolveClubDanceInput() {}
     function stopClubDanceGame(showMessage = true) { worldState.club.game.active = false; if (showMessage) { setWorldChat("Kulüp oyunundan çıktın.", 1000); } }
 
